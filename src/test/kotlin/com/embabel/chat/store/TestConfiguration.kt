@@ -2,6 +2,8 @@ package com.embabel.chat.store
 
 import com.embabel.chat.store.model.SessionUser
 import com.embabel.chat.store.model.TestSessionUser
+import com.embabel.chat.store.repository.ChatSessionRepository
+import com.embabel.chat.store.repository.ChatSessionRepositoryImpl
 import org.drivine.autoconfigure.EnableDrivine
 import org.drivine.autoconfigure.EnableDrivineTestConfig
 import org.drivine.manager.GraphObjectManager
@@ -46,5 +48,10 @@ class TestApplication {
     @Bean
     fun graphObjectManager(factory: GraphObjectManagerFactory): GraphObjectManager {
         return factory.get("neo")
+    }
+
+    @Bean
+    fun chatSessionRepository(graphObjectManager: GraphObjectManager): ChatSessionRepository {
+        return ChatSessionRepositoryImpl(graphObjectManager)
     }
 }

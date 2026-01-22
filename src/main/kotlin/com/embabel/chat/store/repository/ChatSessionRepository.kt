@@ -1,5 +1,6 @@
 package com.embabel.chat.store.repository
 
+import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.SessionUser
 import com.embabel.chat.store.model.StoredMessage
 import com.embabel.chat.store.model.StoredSession
@@ -12,7 +13,7 @@ import java.util.Optional
  * Sessions are owned by users (implementing SessionUser) and contain an ordered
  * list of messages.
  */
-interface SessionRepository {
+interface ChatSessionRepository {
 
     // ==================== Session CRUD ====================
 
@@ -25,6 +26,27 @@ interface SessionRepository {
      * @return the created session
      */
     fun createSession(sessionId: String, owner: SessionUser, title: String? = null): StoredSession
+
+    /**
+     * Create a new session with an initial message.
+     *
+     * This is a convenience method that combines session creation with adding
+     * the first message in a single operation.
+     *
+     * @param sessionId the session ID (should be UUIDv7 for chronological ordering)
+     * @param owner the user who owns the session
+     * @param title optional title for the session
+     * @param messageData the initial message data
+     * @param messageAuthor optional author of the message (null for system messages)
+     * @return the created session with the message
+     */
+    fun createSessionWithMessage(
+        sessionId: String,
+        owner: SessionUser,
+        title: String? = null,
+        messageData: MessageData,
+        messageAuthor: SessionUser? = null
+    ): StoredSession
 
     /**
      * Find a session by its ID.
@@ -63,10 +85,11 @@ interface SessionRepository {
      * Add a message to a session.
      *
      * @param sessionId the session ID
-     * @param message the message to add
+     * @param messageData the message data
+     * @param author optional author of the message (null for system/assistant messages)
      * @return the updated session
      */
-    fun addMessage(sessionId: String, message: StoredMessage): StoredSession
+    fun addMessage(sessionId: String, messageData: MessageData, author: SessionUser? = null): StoredSession
 
     /**
      * Get all messages in a session.

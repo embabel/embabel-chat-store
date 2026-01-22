@@ -1,6 +1,7 @@
 package com.embabel.chat.store.repository
 
 import com.embabel.chat.store.TestApplication
+import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.StoredMessage
 import com.embabel.chat.store.model.TestSessionUser
 import org.drivine.manager.GraphObjectManager
@@ -14,16 +15,16 @@ import java.time.Instant
 import java.util.UUID
 
 /**
- * Integration tests for SessionRepositoryImpl.
+ * Integration tests for ChatSessionRepositoryImpl.
  *
  * Uses TestSessionUser to demonstrate polymorphic SessionUser support.
  */
 @SpringBootTest(classes = [TestApplication::class])
 @Transactional
-class SessionRepositoryImplTest {
+class ChatSessionRepositoryImplTest {
 
     @Autowired
-    private lateinit var sessionRepository: SessionRepository
+    private lateinit var chatSessionRepository: ChatSessionRepository
 
     @Autowired
     private lateinit var graphObjectManager: GraphObjectManager
@@ -47,7 +48,7 @@ class SessionRepositoryImplTest {
         val sessionId = UUID.randomUUID().toString()
 
         // When
-        val created = sessionRepository.createSession(
+        val created = chatSessionRepository.createSession(
             sessionId = sessionId,
             owner = testUser,
             title = "Test Session"
@@ -68,7 +69,7 @@ class SessionRepositoryImplTest {
         val sessionId = UUID.randomUUID().toString()
 
         // When
-        val created = sessionRepository.createSession(
+        val created = chatSessionRepository.createSession(
             sessionId = sessionId,
             owner = testUser,
             title = null
@@ -79,13 +80,68 @@ class SessionRepositoryImplTest {
     }
 
     @Test
+    fun `test create session with message and author`() {
+        // Given
+        val sessionId = UUID.randomUUID().toString()
+        val messageData = MessageData(
+            messageId = UUID.randomUUID().toString(),
+            role = MessageData.ROLE_USER,
+            content = "Initial message",
+            createdAt = Instant.now()
+        )
+
+        // When
+        val created = chatSessionRepository.createSessionWithMessage(
+            sessionId = sessionId,
+            owner = testUser,
+            title = "Session with Message",
+            messageData = messageData,
+            messageAuthor = testUser
+        )
+
+        // Then
+        assertNotNull(created)
+        assertEquals(sessionId, created.session.sessionId)
+        assertEquals("Session with Message", created.session.title)
+        assertEquals(1, created.messages.size)
+        assertEquals("Initial message", created.messages[0].content)
+        assertEquals(testUser.id, created.messages[0].author?.id)
+    }
+
+    @Test
+    fun `test create session with system message (no author)`() {
+        // Given
+        val sessionId = UUID.randomUUID().toString()
+        val messageData = MessageData(
+            messageId = UUID.randomUUID().toString(),
+            role = MessageData.ROLE_ASSISTANT,
+            content = "Welcome! How can I help?",
+            createdAt = Instant.now()
+        )
+
+        // When
+        val created = chatSessionRepository.createSessionWithMessage(
+            sessionId = sessionId,
+            owner = testUser,
+            title = "Welcome Session",
+            messageData = messageData,
+            messageAuthor = null  // System/assistant message
+        )
+
+        // Then
+        assertEquals(1, created.messages.size)
+        assertEquals("Welcome! How can I help?", created.messages[0].content)
+        assertNull(created.messages[0].author)
+    }
+
+    @Test
     fun `test find session by ID`() {
         // Given
         val sessionId = UUID.randomUUID().toString()
-        sessionRepository.createSession(sessionId, testUser, "Findable Session")
+        chatSessionRepository.createSession(sessionId, testUser, "Findable Session")
 
         // When
-        val found = sessionRepository.findBySessionId(sessionId)
+        val found = chatSessionRepository.findBySessionId(sessionId)
 
         // Then
         assertTrue(found.isPresent)
@@ -97,7 +153,7 @@ class SessionRepositoryImplTest {
     @Test
     fun `test findBySessionId returns empty when not found`() {
         // When
-        val found = sessionRepository.findBySessionId("nonexistent-session-id")
+        val found = chatSessionRepository.findBySessionId("nonexistent-session-id")
 
         // Then
         assertFalse(found.isPresent)
@@ -109,11 +165,11 @@ class SessionRepositoryImplTest {
         val session1Id = UUID.randomUUID().toString()
         val session2Id = UUID.randomUUID().toString()
 
-        sessionRepository.createSession(session1Id, testUser, "Session 1")
-        sessionRepository.createSession(session2Id, testUser, "Session 2")
+        chatSessionRepository.createSession(session1Id, testUser, "Session 1")
+        chatSessionRepository.createSession(session2Id, testUser, "Session 2")
 
         // When
-        val sessions = sessionRepository.listSessionsForUser(testUser.id)
+        val sessions = chatSessionRepository.listSessionsForUser(testUser.id)
 
         // Then
         assertTrue(sessions.size >= 2)
@@ -131,7 +187,7 @@ class SessionRepositoryImplTest {
         graphObjectManager.save(anotherUser)
 
         // When
-        val sessions = sessionRepository.listSessionsForUser(anotherUser.id)
+        val sessions = chatSessionRepository.listSessionsForUser(anotherUser.id)
 
         // Then
         assertTrue(sessions.isEmpty())
@@ -141,13 +197,13 @@ class SessionRepositoryImplTest {
     fun `test update session title`() {
         // Given
         val sessionId = UUID.randomUUID().toString()
-        sessionRepository.createSession(sessionId, testUser, "Original Title")
+        chatSessionRepository.createSession(sessionId, testUser, "Original Title")
 
         // When
-        sessionRepository.updateSessionTitle(sessionId, "Updated Title")
+        chatSessionRepository.updateSessionTitle(sessionId, "Updated Title")
 
         // Then
-        val found = sessionRepository.findBySessionId(sessionId)
+        val found = chatSessionRepository.findBySessionId(sessionId)
         assertTrue(found.isPresent)
         assertEquals("Updated Title", found.get().session.title)
     }
@@ -156,67 +212,90 @@ class SessionRepositoryImplTest {
     fun `test delete session`() {
         // Given
         val sessionId = UUID.randomUUID().toString()
-        sessionRepository.createSession(sessionId, testUser, "To Delete")
+        chatSessionRepository.createSession(sessionId, testUser, "To Delete")
 
         // When
-        sessionRepository.deleteSession(sessionId)
+        chatSessionRepository.deleteSession(sessionId)
 
         // Then
-        val found = sessionRepository.findBySessionId(sessionId)
+        val found = chatSessionRepository.findBySessionId(sessionId)
         assertFalse(found.isPresent)
     }
 
     @Test
-    fun `test add message to session`() {
+    fun `test add message to session with author`() {
         // Given
         val sessionId = UUID.randomUUID().toString()
-        sessionRepository.createSession(sessionId, testUser, "Test Session")
+        chatSessionRepository.createSession(sessionId, testUser, "Test Session")
 
-        val message = StoredMessage(
+        val messageData = MessageData(
             messageId = UUID.randomUUID().toString(),
-            role = StoredMessage.ROLE_USER,
+            role = MessageData.ROLE_USER,
             content = "Hello, world!",
             createdAt = Instant.now()
         )
 
         // When
-        val updated = sessionRepository.addMessage(sessionId, message)
+        val updated = chatSessionRepository.addMessage(sessionId, messageData, testUser)
 
         // Then
         assertEquals(1, updated.messages.size)
         assertEquals("Hello, world!", updated.messages[0].content)
-        assertEquals(StoredMessage.ROLE_USER, updated.messages[0].role)
+        assertEquals(MessageData.ROLE_USER, updated.messages[0].role)
+        assertEquals(testUser.id, updated.messages[0].author?.id)
+    }
+
+    @Test
+    fun `test add message to session without author`() {
+        // Given
+        val sessionId = UUID.randomUUID().toString()
+        chatSessionRepository.createSession(sessionId, testUser, "Test Session")
+
+        val messageData = MessageData(
+            messageId = UUID.randomUUID().toString(),
+            role = MessageData.ROLE_ASSISTANT,
+            content = "I'm here to help!",
+            createdAt = Instant.now()
+        )
+
+        // When
+        val updated = chatSessionRepository.addMessage(sessionId, messageData, null)
+
+        // Then
+        assertEquals(1, updated.messages.size)
+        assertEquals("I'm here to help!", updated.messages[0].content)
+        assertNull(updated.messages[0].author)
     }
 
     @Test
     fun `test add multiple messages maintains order`() {
         // Given
         val sessionId = UUID.randomUUID().toString()
-        sessionRepository.createSession(sessionId, testUser, "Test Session")
+        chatSessionRepository.createSession(sessionId, testUser, "Test Session")
 
-        val msg1 = StoredMessage(
+        val msg1 = MessageData(
             messageId = "001-${UUID.randomUUID()}",
-            role = StoredMessage.ROLE_USER,
+            role = MessageData.ROLE_USER,
             content = "First message",
             createdAt = Instant.now()
         )
-        val msg2 = StoredMessage(
+        val msg2 = MessageData(
             messageId = "002-${UUID.randomUUID()}",
-            role = StoredMessage.ROLE_ASSISTANT,
+            role = MessageData.ROLE_ASSISTANT,
             content = "Second message",
             createdAt = Instant.now()
         )
-        val msg3 = StoredMessage(
+        val msg3 = MessageData(
             messageId = "003-${UUID.randomUUID()}",
-            role = StoredMessage.ROLE_USER,
+            role = MessageData.ROLE_USER,
             content = "Third message",
             createdAt = Instant.now()
         )
 
         // When
-        sessionRepository.addMessage(sessionId, msg1)
-        sessionRepository.addMessage(sessionId, msg2)
-        val updated = sessionRepository.addMessage(sessionId, msg3)
+        chatSessionRepository.addMessage(sessionId, msg1, testUser)
+        chatSessionRepository.addMessage(sessionId, msg2, null)
+        val updated = chatSessionRepository.addMessage(sessionId, msg3, testUser)
 
         // Then
         assertEquals(3, updated.messages.size)
@@ -229,16 +308,16 @@ class SessionRepositoryImplTest {
     @Test
     fun `test add message throws for nonexistent session`() {
         // Given
-        val message = StoredMessage(
+        val messageData = MessageData(
             messageId = UUID.randomUUID().toString(),
-            role = StoredMessage.ROLE_USER,
+            role = MessageData.ROLE_USER,
             content = "Should fail",
             createdAt = Instant.now()
         )
 
         // When/Then
         assertThrows(IllegalArgumentException::class.java) {
-            sessionRepository.addMessage("nonexistent-session", message)
+            chatSessionRepository.addMessage("nonexistent-session", messageData, testUser)
         }
     }
 
@@ -246,25 +325,25 @@ class SessionRepositoryImplTest {
     fun `test get messages`() {
         // Given
         val sessionId = UUID.randomUUID().toString()
-        sessionRepository.createSession(sessionId, testUser, "Test Session")
+        chatSessionRepository.createSession(sessionId, testUser, "Test Session")
 
-        val msg1 = StoredMessage(
+        val msg1 = MessageData(
             messageId = "a-${UUID.randomUUID()}",
-            role = StoredMessage.ROLE_USER,
+            role = MessageData.ROLE_USER,
             content = "Message 1",
             createdAt = Instant.now()
         )
-        val msg2 = StoredMessage(
+        val msg2 = MessageData(
             messageId = "b-${UUID.randomUUID()}",
-            role = StoredMessage.ROLE_ASSISTANT,
+            role = MessageData.ROLE_ASSISTANT,
             content = "Message 2",
             createdAt = Instant.now()
         )
-        sessionRepository.addMessage(sessionId, msg1)
-        sessionRepository.addMessage(sessionId, msg2)
+        chatSessionRepository.addMessage(sessionId, msg1, testUser)
+        chatSessionRepository.addMessage(sessionId, msg2, null)
 
         // When
-        val messages = sessionRepository.getMessages(sessionId)
+        val messages = chatSessionRepository.getMessages(sessionId)
 
         // Then
         assertEquals(2, messages.size)
@@ -273,7 +352,7 @@ class SessionRepositoryImplTest {
     @Test
     fun `test get messages returns empty for nonexistent session`() {
         // When
-        val messages = sessionRepository.getMessages("nonexistent-session")
+        val messages = chatSessionRepository.getMessages("nonexistent-session")
 
         // Then
         assertTrue(messages.isEmpty())
@@ -286,7 +365,7 @@ class SessionRepositoryImplTest {
         val beforeCreate = Instant.now()
 
         // When
-        val created = sessionRepository.createSession(sessionId, testUser, "Timestamp Test")
+        val created = chatSessionRepository.createSession(sessionId, testUser, "Timestamp Test")
 
         val afterCreate = Instant.now()
 
@@ -300,13 +379,13 @@ class SessionRepositoryImplTest {
     fun `test delete all sessions`() {
         // Given
         val sessionId = UUID.randomUUID().toString()
-        sessionRepository.createSession(sessionId, testUser, "To Delete")
+        chatSessionRepository.createSession(sessionId, testUser, "To Delete")
 
         // When
-        sessionRepository.deleteAll()
+        chatSessionRepository.deleteAll()
 
         // Then
-        val found = sessionRepository.findBySessionId(sessionId)
+        val found = chatSessionRepository.findBySessionId(sessionId)
         assertFalse(found.isPresent)
     }
 }

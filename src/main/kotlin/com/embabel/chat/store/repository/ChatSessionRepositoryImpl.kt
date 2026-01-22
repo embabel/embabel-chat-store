@@ -1,29 +1,28 @@
 package com.embabel.chat.store.repository
 
+import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.SessionData
 import com.embabel.chat.store.model.SessionUser
 import com.embabel.chat.store.model.StoredMessage
 import com.embabel.chat.store.model.StoredSession
 import org.drivine.manager.GraphObjectManager
 import org.slf4j.LoggerFactory
-import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Transactional
 import java.time.Instant
 import java.util.Optional
 
 /**
- * Drivine-based implementation of SessionRepository.
+ * Drivine-based implementation of ChatSessionRepository.
  *
  * Uses GraphObjectManager for type-safe graph operations.
  * Note: Full DSL support requires code generation. This implementation
  * uses basic GraphObjectManager operations.
  */
-@Repository
-open class SessionRepositoryImpl(
+open class ChatSessionRepositoryImpl(
     private val graphObjectManager: GraphObjectManager
-) : SessionRepository {
+) : ChatSessionRepository {
 
-    private val logger = LoggerFactory.getLogger(SessionRepositoryImpl::class.java)
+    private val logger = LoggerFactory.getLogger(ChatSessionRepositoryImpl::class.java)
 
     @Transactional
     override fun createSession(sessionId: String, owner: SessionUser, title: String?): StoredSession {
@@ -37,6 +36,34 @@ open class SessionRepositoryImpl(
             ),
             owner = owner,
             messages = emptyList()
+        )
+
+        return graphObjectManager.save(session)
+    }
+
+    @Transactional
+    override fun createSessionWithMessage(
+        sessionId: String,
+        owner: SessionUser,
+        title: String?,
+        messageData: MessageData,
+        messageAuthor: SessionUser?
+    ): StoredSession {
+        logger.debug("Creating session {} with initial message for owner {}", sessionId, owner.id)
+
+        val message = StoredMessage(
+            message = messageData,
+            author = messageAuthor
+        )
+
+        val session = StoredSession(
+            session = SessionData(
+                sessionId = sessionId,
+                title = title,
+                createdAt = Instant.now()
+            ),
+            owner = owner,
+            messages = listOf(message)
         )
 
         return graphObjectManager.save(session)
@@ -72,12 +99,18 @@ open class SessionRepositoryImpl(
     }
 
     @Transactional
-    override fun addMessage(sessionId: String, message: StoredMessage): StoredSession {
-        logger.debug("Adding message {} to session {}", message.messageId, sessionId)
+    override fun addMessage(sessionId: String, messageData: MessageData, author: SessionUser?): StoredSession {
+        logger.debug("Adding message {} to session {}", messageData.messageId, sessionId)
 
         val session = findBySessionId(sessionId).orElseThrow {
             IllegalArgumentException("Session not found: $sessionId")
         }
+
+        val message = StoredMessage(
+            message = messageData,
+            author = author
+        )
+
         val updated = session.withMessage(message)
         return graphObjectManager.save(updated)
     }
