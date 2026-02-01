@@ -1,15 +1,15 @@
 package com.embabel.chat.store.model
 
+import com.embabel.chat.MessageAuthor
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 
 /**
- * Interface for users that can own chat sessions.
+ * Interface for users that can own chat sessions and author messages.
  *
- * Applications implement this interface on their user type to enable
- * polymorphic session ownership. The Drivine @NodeFragment annotation
- * with the "SessionUser" label allows the library to work with any
- * user type that implements this interface.
+ * Extends [MessageAuthor] from embabel-agent-api with Drivine annotations
+ * for Neo4j persistence. Applications implement this interface on their
+ * user type to enable polymorphic session ownership.
  *
  * When using this library, you must register your concrete implementation
  * using `persistenceManager.registerSubtype()`:
@@ -38,16 +38,16 @@ import org.drivine.annotation.NodeId
  * ```
  */
 @NodeFragment(labels = ["SessionUser"])
-interface SessionUser {
+interface SessionUser : MessageAuthor {
     /**
      * Unique identifier for the user.
      * Annotated with @NodeId so Drivine can identify nodes for change detection.
      */
     @get:NodeId
-    val id: String
+    override val id: String
 
     /**
      * Display name shown in UI contexts.
      */
-    val displayName: String
+    override val displayName: String
 }

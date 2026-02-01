@@ -1,5 +1,6 @@
 package com.embabel.chat.store.repository
 
+import com.embabel.chat.Role
 import com.embabel.chat.store.TestApplication
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.StoredMessage
@@ -85,7 +86,7 @@ class ChatSessionRepositoryImplTest {
         val sessionId = UUID.randomUUID().toString()
         val messageData = MessageData(
             messageId = UUID.randomUUID().toString(),
-            role = MessageData.ROLE_USER,
+            role = Role.USER,
             content = "Initial message",
             createdAt = Instant.now()
         )
@@ -114,7 +115,7 @@ class ChatSessionRepositoryImplTest {
         val sessionId = UUID.randomUUID().toString()
         val messageData = MessageData(
             messageId = UUID.randomUUID().toString(),
-            role = MessageData.ROLE_ASSISTANT,
+            role = Role.ASSISTANT,
             content = "Welcome! How can I help?",
             createdAt = Instant.now()
         )
@@ -230,7 +231,7 @@ class ChatSessionRepositoryImplTest {
 
         val messageData = MessageData(
             messageId = UUID.randomUUID().toString(),
-            role = MessageData.ROLE_USER,
+            role = Role.USER,
             content = "Hello, world!",
             createdAt = Instant.now()
         )
@@ -241,7 +242,7 @@ class ChatSessionRepositoryImplTest {
         // Then
         assertEquals(1, updated.messages.size)
         assertEquals("Hello, world!", updated.messages[0].content)
-        assertEquals(MessageData.ROLE_USER, updated.messages[0].role)
+        assertEquals(Role.USER, updated.messages[0].role)
         assertEquals(testUser.id, updated.messages[0].author?.id)
     }
 
@@ -253,7 +254,7 @@ class ChatSessionRepositoryImplTest {
 
         val messageData = MessageData(
             messageId = UUID.randomUUID().toString(),
-            role = MessageData.ROLE_ASSISTANT,
+            role = Role.ASSISTANT,
             content = "I'm here to help!",
             createdAt = Instant.now()
         )
@@ -275,19 +276,19 @@ class ChatSessionRepositoryImplTest {
 
         val msg1 = MessageData(
             messageId = "001-${UUID.randomUUID()}",
-            role = MessageData.ROLE_USER,
+            role = Role.USER,
             content = "First message",
             createdAt = Instant.now()
         )
         val msg2 = MessageData(
             messageId = "002-${UUID.randomUUID()}",
-            role = MessageData.ROLE_ASSISTANT,
+            role = Role.ASSISTANT,
             content = "Second message",
             createdAt = Instant.now()
         )
         val msg3 = MessageData(
             messageId = "003-${UUID.randomUUID()}",
-            role = MessageData.ROLE_USER,
+            role = Role.USER,
             content = "Third message",
             createdAt = Instant.now()
         )
@@ -310,7 +311,7 @@ class ChatSessionRepositoryImplTest {
         // Given
         val messageData = MessageData(
             messageId = UUID.randomUUID().toString(),
-            role = MessageData.ROLE_USER,
+            role = Role.USER,
             content = "Should fail",
             createdAt = Instant.now()
         )
@@ -329,13 +330,13 @@ class ChatSessionRepositoryImplTest {
 
         val msg1 = MessageData(
             messageId = "a-${UUID.randomUUID()}",
-            role = MessageData.ROLE_USER,
+            role = Role.USER,
             content = "Message 1",
             createdAt = Instant.now()
         )
         val msg2 = MessageData(
             messageId = "b-${UUID.randomUUID()}",
-            role = MessageData.ROLE_ASSISTANT,
+            role = Role.ASSISTANT,
             content = "Message 2",
             createdAt = Instant.now()
         )
