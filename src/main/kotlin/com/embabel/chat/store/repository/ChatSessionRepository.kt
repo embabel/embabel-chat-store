@@ -37,7 +37,8 @@ interface ChatSessionRepository {
      * @param owner the user who owns the session
      * @param title optional title for the session
      * @param messageData the initial message data
-     * @param messageAuthor optional author of the message (null for system messages)
+     * @param messageAuthor optional author of the message (who sent it)
+     * @param messageRecipient optional recipient of the message (who should receive it)
      * @return the created session with the message
      */
     fun createSessionWithMessage(
@@ -45,7 +46,8 @@ interface ChatSessionRepository {
         owner: SessionUser,
         title: String? = null,
         messageData: MessageData,
-        messageAuthor: SessionUser? = null
+        messageAuthor: SessionUser? = null,
+        messageRecipient: SessionUser? = null
     ): StoredSession
 
     /**
@@ -86,10 +88,16 @@ interface ChatSessionRepository {
      *
      * @param sessionId the session ID
      * @param messageData the message data
-     * @param author optional author of the message (null for system/assistant messages)
+     * @param author optional author of the message (who sent it)
+     * @param recipient optional recipient of the message (who should receive it)
      * @return the updated session
      */
-    fun addMessage(sessionId: String, messageData: MessageData, author: SessionUser? = null): StoredSession
+    fun addMessage(
+        sessionId: String,
+        messageData: MessageData,
+        author: SessionUser? = null,
+        recipient: SessionUser? = null
+    ): StoredSession
 
     /**
      * Get all messages in a session.

@@ -44,18 +44,20 @@ data class MessageData(
 )
 
 /**
- * A message stored in a chat session, with its author relationship.
+ * A message stored in a chat session, with its author and recipient relationships.
  *
  * This is a GraphView that includes:
  * - The message node data ([MessageData])
- * - The optional author relationship to a [SessionUser]
+ * - The optional author relationship (who sent the message)
+ * - The optional recipient relationship (who should receive the message)
  *
  * Example Neo4j structure:
  * ```
- * (msg:StoredMessage)-[:AUTHORED_BY]->(user:SessionUser)
+ * (msg:StoredMessage)-[:AUTHORED_BY]->(from:SessionUser)
+ * (msg:StoredMessage)-[:SENT_TO]->(to:SessionUser)
  * ```
  *
- * If you don't need the author loaded, you can use [MessageData] directly
+ * If you don't need relationships loaded, you can use [MessageData] directly
  * in your own GraphView for lighter reads.
  */
 @GraphView
@@ -67,10 +69,17 @@ data class StoredMessage(
 
     /**
      * The user who authored this message.
-     * Null for system-generated messages (assistant responses).
+     * Null for system-generated messages (assistant responses) until a system user is assigned.
      */
     @GraphRelationship(type = "AUTHORED_BY", direction = Direction.OUTGOING)
-    val author: SessionUser? = null
+    val author: SessionUser? = null,
+
+    /**
+     * The user who should receive this message.
+     * Used for routing (e.g., WebSocket notifications).
+     */
+    @GraphRelationship(type = "SENT_TO", direction = Direction.OUTGOING)
+    val recipient: SessionUser? = null
 ) {
     // Convenience accessors for common properties
     val messageId: String get() = message.messageId

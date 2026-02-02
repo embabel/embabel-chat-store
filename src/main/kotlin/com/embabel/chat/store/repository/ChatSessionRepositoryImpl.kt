@@ -47,13 +47,15 @@ open class ChatSessionRepositoryImpl(
         owner: SessionUser,
         title: String?,
         messageData: MessageData,
-        messageAuthor: SessionUser?
+        messageAuthor: SessionUser?,
+        messageRecipient: SessionUser?
     ): StoredSession {
         logger.debug("Creating session {} with initial message for owner {}", sessionId, owner.id)
 
         val message = StoredMessage(
             message = messageData,
-            author = messageAuthor
+            author = messageAuthor,
+            recipient = messageRecipient
         )
 
         val session = StoredSession(
@@ -99,7 +101,12 @@ open class ChatSessionRepositoryImpl(
     }
 
     @Transactional
-    override fun addMessage(sessionId: String, messageData: MessageData, author: SessionUser?): StoredSession {
+    override fun addMessage(
+        sessionId: String,
+        messageData: MessageData,
+        author: SessionUser?,
+        recipient: SessionUser?
+    ): StoredSession {
         logger.debug("Adding message {} to session {}", messageData.messageId, sessionId)
 
         val session = findBySessionId(sessionId).orElseThrow {
@@ -108,7 +115,8 @@ open class ChatSessionRepositoryImpl(
 
         val message = StoredMessage(
             message = messageData,
-            author = author
+            author = author,
+            recipient = recipient
         )
 
         val updated = session.withMessage(message)

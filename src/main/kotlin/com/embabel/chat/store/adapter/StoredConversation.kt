@@ -44,6 +44,13 @@ import java.util.UUID
  * 3. On success: [MessageEvent] with status PERSISTED is published
  * 4. On failure: [MessageEvent] with status PERSISTENCE_FAILED is published
  *
+ * ## Message Attribution
+ *
+ * Messages are attributed with `from` (author) and `to` (recipient) based on role:
+ * - USER messages: from=[user], to=[agent]
+ * - ASSISTANT messages: from=[agent], to=[user]
+ * - SYSTEM messages: from=null, to=[user]
+ *
  * ## Auto Title Generation
  *
  * If a [TitleGenerator] is provided, the session title is automatically generated
@@ -56,7 +63,8 @@ import java.util.UUID
  *     id = "session-123",
  *     repository = chatSessionRepository,
  *     eventPublisher = applicationEventPublisher,
- *     sessionUser = currentUser,
+ *     user = currentUser,
+ *     agent = assistantUser,
  *     titleGenerator = LlmTitleGenerator { prompt -> llm.generate(prompt) }
  * )
  *
@@ -73,7 +81,8 @@ import java.util.UUID
  * @param id the chat session ID (must already exist in the repository)
  * @param repository the repository for persistence operations
  * @param eventPublisher Spring's event publisher for broadcasting events
- * @param sessionUser optional user for attributing user messages
+ * @param user the human user participant (author of USER messages, recipient of ASSISTANT messages)
+ * @param agent the AI/system user participant (author of ASSISTANT messages, recipient of USER messages)
  * @param titleGenerator optional generator for auto-generating session title from first message
  * @param assetTracker tracker for conversation assets (defaults to in-memory)
  * @param scope coroutine scope for async operations (defaults to IO dispatcher with SupervisorJob)
@@ -82,7 +91,8 @@ class StoredConversation(
     override val id: String,
     private val repository: ChatSessionRepository,
     private val eventPublisher: ApplicationEventPublisher? = null,
-    private val sessionUser: SessionUser? = null,
+    private val user: SessionUser? = null,
+    private val agent: SessionUser? = null,
     private val titleGenerator: TitleGenerator? = null,
     override val assetTracker: AssetTracker = InMemoryAssetTracker(),
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
@@ -98,10 +108,11 @@ class StoredConversation(
         get() = repository.getMessages(id).map { it.toMessage() }
 
     /**
-     * Add a message to the conversation asynchronously using the default session user.
+     * Add a message using default [user] and [agent] for attribution based on role.
      *
-     * For USER role messages, the default [sessionUser] is used as the author.
-     * For other roles (ASSISTANT, SYSTEM), no author is attributed.
+     * - USER messages: from=[user], to=[agent]
+     * - ASSISTANT messages: from=[agent], to=[user]
+     * - SYSTEM messages: from=null, to=[user]
      *
      * This method returns immediately. The message is persisted in the background,
      * and events are published on success or failure.
@@ -110,44 +121,81 @@ class StoredConversation(
      * @return the message (returned immediately, before persistence completes)
      */
     override fun addMessage(message: Message): Message {
-        val author = when (message.role) {
-            Role.USER -> sessionUser
-            else -> null
+        val (from, to) = when (message.role) {
+            Role.USER -> user to agent
+            Role.ASSISTANT -> agent to user
+            else -> null to user
         }
-        return addMessageInternal(message, author)
+        return addMessageInternal(message, from, to)
     }
 
     /**
      * Add a message with explicit author attribution.
      *
-     * Use this for group chats or when the author differs per message.
-     * The provided author must be a [SessionUser] for persistence.
+     * The recipient is derived from role:
+     * - USER/SYSTEM messages: to=[agent]
+     * - ASSISTANT messages: to=[user]
+     *
+     * For full control over both from and to, use [addMessageFromTo].
      *
      * @param message the message to add
-     * @param author the author of this message (must be SessionUser for persistence, null for system/assistant)
+     * @param author the author of this message (must be SessionUser for persistence)
      * @return the message (returned immediately, before persistence completes)
      * @throws IllegalArgumentException if author is not null and not a SessionUser
      */
     override fun addMessageFrom(message: Message, author: MessageAuthor?): Message {
-        val sessionUserAuthor = when {
+        val from = when {
             author == null -> null
             author is SessionUser -> author
             else -> throw IllegalArgumentException(
                 "Author must be a SessionUser for persistence. Got: ${author::class.simpleName}"
             )
         }
-        return addMessageInternal(message, sessionUserAuthor)
+        val to = when (message.role) {
+            Role.ASSISTANT -> user
+            else -> agent
+        }
+        return addMessageInternal(message, from, to)
     }
 
-    private fun addMessageInternal(message: Message, author: SessionUser?): Message {
+    /**
+     * Add a message with explicit author and recipient.
+     *
+     * Use this for multi-party chats where both sender and receiver need to be specified.
+     *
+     * @param message the message to add
+     * @param from the author of this message (who sent it, must be SessionUser for persistence)
+     * @param to the recipient of this message (who should receive it, must be SessionUser for persistence)
+     * @return the message (returned immediately, before persistence completes)
+     * @throws IllegalArgumentException if from or to is not null and not a SessionUser
+     */
+    override fun addMessageFromTo(message: Message, from: MessageAuthor?, to: MessageAuthor?): Message {
+        val fromUser = from?.toSessionUser("from")
+        val toUser = to?.toSessionUser("to")
+        return addMessageInternal(message, fromUser, toUser)
+    }
+
+    private fun MessageAuthor.toSessionUser(paramName: String): SessionUser {
+        return this as? SessionUser
+            ?: throw IllegalArgumentException(
+                "$paramName must be a SessionUser for persistence. Got: ${this::class.simpleName}"
+            )
+    }
+
+    private fun addMessageInternal(message: Message, from: SessionUser?, to: SessionUser?): Message {
         val messageData = message.toMessageData(
             messageId = UUID.randomUUID().toString()
         )
         val isFirstMessage = messages.isEmpty()
 
+        // Publish ADDED event synchronously before async persistence
+        eventPublisher?.publishEvent(
+            MessageEvent.added(id, message, from?.id, to?.id)
+        )
+
         scope.launch {
             try {
-                val updatedSession = repository.addMessage(id, messageData, author)
+                val updatedSession = repository.addMessage(id, messageData, from, to)
                 val persistedMessage = updatedSession.messages.last().toMessage()
 
                 // Generate title from first message if no title exists
@@ -165,7 +213,7 @@ class StoredConversation(
                 }
 
                 eventPublisher?.publishEvent(
-                    MessageEvent.persisted(id, persistedMessage)
+                    MessageEvent.persisted(id, persistedMessage, from?.id, to?.id)
                 )
                 logger.debug("Message {} persisted to session {}", messageData.messageId, id)
             } catch (e: Exception) {
@@ -175,7 +223,9 @@ class StoredConversation(
                         conversationId = id,
                         content = message.content,
                         role = message.role,
-                        error = e
+                        error = e,
+                        fromUserId = from?.id,
+                        toUserId = to?.id
                     )
                 )
             }

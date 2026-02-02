@@ -18,18 +18,30 @@ import org.springframework.context.ApplicationEventPublisher
  *
  * ## Usage
  *
- * **1-1 chats** (default author for all user messages):
+ * **1-1 chats** (user and agent defaults):
  * ```kotlin
- * val conversation = factory.createForUser(sessionId, currentUser)
- * conversation.addMessage(userMessage)  // uses currentUser as author
+ * val conversation = factory.createForParticipants(sessionId, user = human, agent = assistant)
+ * conversation.addMessage(userMessage)  // from=human, to=assistant
+ * conversation.addMessage(assistantMessage)  // from=assistant, to=human
  * ```
  *
- * **Group chats** (explicit author per message):
+ * **Multi-party chats** (explicit from/to per message):
  * ```kotlin
- * val conversation = factory.create(sessionId)
- * conversation.addMessageFrom(aliceMessage, alice)
- * conversation.addMessageFrom(bobMessage, bob)
+ * val conversation = factory.create(sessionId) as StoredConversation
+ * conversation.addMessageFromTo(message, from = alice, to = bob)
+ * conversation.addMessageFromTo(message, from = agent1, to = agent2)
  * ```
+ *
+ * ## Future: Multi-User and Multi-Agent Support
+ *
+ * The current model supports 1-1 chats with default user/agent participants.
+ * For multi-party scenarios, use [StoredConversation.addMessageFromTo] with explicit
+ * from/to per message.
+ *
+ * Planned enhancements:
+ * - Group recipients (send to multiple users)
+ * - Participant lists on conversations
+ * - Agent-to-agent communication patterns
  *
  * @param repository the repository for persistence operations
  * @param eventPublisher optional event publisher for message lifecycle events
@@ -46,34 +58,38 @@ class StoredConversationFactory @JvmOverloads constructor(
     override val storeType: ConversationStoreType = ConversationStoreType.STORED
 
     /**
-     * Create a conversation with no default author.
+     * Create a conversation with no default participants.
      *
-     * Use [Conversation.addMessageFrom] to specify author per message,
-     * or for conversations where author attribution is not needed.
+     * Use [StoredConversation.addMessageFromTo] to specify from/to per message.
      */
     override fun create(id: String): Conversation {
-        return createInternal(id, sessionUser = null)
+        return createInternal(id, user = null, agent = null)
     }
 
     /**
-     * Create a conversation with a default author for user messages.
+     * Create a conversation for a 1-1 chat between a user and an agent.
      *
-     * Use this for 1-1 chats where all user messages come from the same user.
-     * The provided user is used as the author for messages added via [Conversation.addMessage].
+     * Messages are automatically attributed based on role:
+     * - USER messages: from=[user], to=[agent]
+     * - ASSISTANT messages: from=[agent], to=[user]
+     * - SYSTEM messages: from=null, to=[user]
      *
      * @param id the conversation/session ID
-     * @param sessionUser the default author for user messages
+     * @param user the human user participant
+     * @param agent the AI/system user participant (optional, can be set later)
      */
-    fun createForUser(id: String, sessionUser: SessionUser): Conversation {
-        return createInternal(id, sessionUser)
+    @JvmOverloads
+    fun createForParticipants(id: String, user: SessionUser, agent: SessionUser? = null): Conversation {
+        return createInternal(id, user, agent)
     }
 
-    private fun createInternal(id: String, sessionUser: SessionUser?): Conversation {
+    private fun createInternal(id: String, user: SessionUser?, agent: SessionUser?): Conversation {
         return StoredConversation(
             id = id,
             repository = repository,
             eventPublisher = eventPublisher,
-            sessionUser = sessionUser,
+            user = user,
+            agent = agent,
             titleGenerator = titleGenerator,
             assetTracker = InMemoryAssetTracker(),
             scope = scope
