@@ -85,6 +85,7 @@ enum class MessageStatus {
  * @param status the current status of the message
  * @param fromUserId the ID of the user who sent this message (author)
  * @param toUserId the ID of the user who should receive this message (for routing, e.g., WebSocket)
+ * @param title the session/conversation title (for UI display)
  * @param message the message (always present for ADDED, present for PERSISTED)
  * @param content the message content (useful for PERSISTENCE_FAILED when message ref may be stale)
  * @param role the message role
@@ -96,6 +97,7 @@ data class MessageEvent(
     val status: MessageStatus,
     val fromUserId: String? = null,
     val toUserId: String? = null,
+    val title: String? = null,
     val message: Message? = null,
     val content: String? = null,
     val role: Role? = null,
@@ -111,12 +113,14 @@ data class MessageEvent(
             conversationId: String,
             message: Message,
             fromUserId: String? = null,
-            toUserId: String? = null
+            toUserId: String? = null,
+            title: String? = null
         ) = MessageEvent(
             conversationId = conversationId,
             status = MessageStatus.ADDED,
             fromUserId = fromUserId,
             toUserId = toUserId,
+            title = title,
             message = message,
             content = message.content,
             role = message.role
@@ -129,12 +133,14 @@ data class MessageEvent(
             conversationId: String,
             message: Message,
             fromUserId: String? = null,
-            toUserId: String? = null
+            toUserId: String? = null,
+            title: String? = null
         ) = MessageEvent(
             conversationId = conversationId,
             status = MessageStatus.PERSISTED,
             fromUserId = fromUserId,
             toUserId = toUserId,
+            title = title,
             message = message,
             content = message.content,
             role = message.role
@@ -149,12 +155,14 @@ data class MessageEvent(
             role: Role,
             error: Throwable,
             fromUserId: String? = null,
-            toUserId: String? = null
+            toUserId: String? = null,
+            title: String? = null
         ) = MessageEvent(
             conversationId = conversationId,
             status = MessageStatus.PERSISTENCE_FAILED,
             fromUserId = fromUserId,
             toUserId = toUserId,
+            title = title,
             content = content,
             role = role,
             error = error

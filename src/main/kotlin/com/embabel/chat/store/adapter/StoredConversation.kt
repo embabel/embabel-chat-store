@@ -83,6 +83,7 @@ import java.util.UUID
  * @param eventPublisher Spring's event publisher for broadcasting events
  * @param user the human user participant (author of USER messages, recipient of ASSISTANT messages)
  * @param agent the AI/system user participant (author of ASSISTANT messages, recipient of USER messages)
+ * @param title the session title (included in events for UI display)
  * @param titleGenerator optional generator for auto-generating session title from first message
  * @param assetTracker tracker for conversation assets (defaults to in-memory)
  * @param scope coroutine scope for async operations (defaults to IO dispatcher with SupervisorJob)
@@ -93,6 +94,7 @@ class StoredConversation(
     private val eventPublisher: ApplicationEventPublisher? = null,
     private val user: SessionUser? = null,
     private val agent: SessionUser? = null,
+    private var title: String? = null,
     private val titleGenerator: TitleGenerator? = null,
     override val assetTracker: AssetTracker = InMemoryAssetTracker(),
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
@@ -190,7 +192,7 @@ class StoredConversation(
 
         // Publish ADDED event synchronously before async persistence
         eventPublisher?.publishEvent(
-            MessageEvent.added(id, message, from?.id, to?.id)
+            MessageEvent.added(id, message, from?.id, to?.id, title)
         )
 
         scope.launch {
@@ -199,21 +201,18 @@ class StoredConversation(
                 val persistedMessage = updatedSession.messages.last().toMessage()
 
                 // Generate title from first message if no title exists
-                if (isFirstMessage && titleGenerator != null) {
-                    val session = repository.findBySessionId(id).orElse(null)
-                    if (session?.session?.title.isNullOrBlank()) {
-                        try {
-                            val title = titleGenerator.generate(message)
-                            repository.updateSessionTitle(id, title)
-                            logger.debug("Generated title '{}' for session {}", title, id)
-                        } catch (e: Exception) {
-                            logger.warn("Failed to generate title for session {}: {}", id, e.message)
-                        }
+                if (isFirstMessage && titleGenerator != null && title.isNullOrBlank()) {
+                    try {
+                        title = titleGenerator.generate(message)
+                        repository.updateSessionTitle(id, title!!)
+                        logger.debug("Generated title '{}' for session {}", title, id)
+                    } catch (e: Exception) {
+                        logger.warn("Failed to generate title for session {}: {}", id, e.message)
                     }
                 }
 
                 eventPublisher?.publishEvent(
-                    MessageEvent.persisted(id, persistedMessage, from?.id, to?.id)
+                    MessageEvent.persisted(id, persistedMessage, from?.id, to?.id, title)
                 )
                 logger.debug("Message {} persisted to session {}", messageData.messageId, id)
             } catch (e: Exception) {
@@ -225,7 +224,8 @@ class StoredConversation(
                         role = message.role,
                         error = e,
                         fromUserId = from?.id,
-                        toUserId = to?.id
+                        toUserId = to?.id,
+                        title = title
                     )
                 )
             }

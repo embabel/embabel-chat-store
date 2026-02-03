@@ -77,19 +77,31 @@ class StoredConversationFactory @JvmOverloads constructor(
      * @param id the conversation/session ID
      * @param user the human user participant
      * @param agent the AI/system user participant (optional, can be set later)
+     * @param title the session title (included in events for UI display)
      */
     @JvmOverloads
-    fun createForParticipants(id: String, user: SessionUser, agent: SessionUser? = null): Conversation {
-        return createInternal(id, user, agent)
+    fun createForParticipants(
+        id: String,
+        user: SessionUser,
+        agent: SessionUser? = null,
+        title: String? = null
+    ): Conversation {
+        return createInternal(id, user, agent, title)
     }
 
-    private fun createInternal(id: String, user: SessionUser?, agent: SessionUser?): Conversation {
+    private fun createInternal(
+        id: String,
+        user: SessionUser?,
+        agent: SessionUser?,
+        title: String? = null
+    ): Conversation {
         return StoredConversation(
             id = id,
             repository = repository,
             eventPublisher = eventPublisher,
             user = user,
             agent = agent,
+            title = title,
             titleGenerator = titleGenerator,
             assetTracker = InMemoryAssetTracker(),
             scope = scope
