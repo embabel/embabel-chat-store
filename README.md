@@ -75,8 +75,8 @@ fun onMessage(event: MessageEvent) {
 Messages have explicit sender and recipient:
 
 ```
-(message:StoredMessage)-[:AUTHORED_BY]->(from:SessionUser)
-(message:StoredMessage)-[:SENT_TO]->(to:SessionUser)
+(message:StoredMessage)-[:AUTHORED_BY]->(from:User)
+(message:StoredMessage)-[:SENT_TO]->(to:User)
 ```
 
 ### Role-Based Routing (1-1 Chats)
@@ -148,26 +148,39 @@ val factory = StoredConversationFactory(
 )
 ```
 
-## Session User
+## User Implementation
 
-Implement `SessionUser` for your user type:
+Implement `StoredUser` for your user type. The `StoredUser` interface extends `User` from
+`embabel-agent-api` with Drivine annotations for Neo4j persistence:
 
 ```kotlin
-@NodeFragment(labels = ["SessionUser", "MyUser"])
+@NodeFragment(labels = ["User", "MyUser"])
 data class MyUser(
     @NodeId override val id: String,
     override val displayName: String,
-    val email: String
-) : SessionUser
+    override val username: String,
+    override val email: String?
+) : StoredUser
 ```
 
-Register with Drivine:
+Register with Drivine for polymorphic loading:
 
 ```kotlin
 persistenceManager.registerSubtype(
-    SessionUser::class.java,
-    "MyUser|SessionUser",
+    StoredUser::class.java,
+    "MyUser|User",  // Labels sorted alphabetically
     MyUser::class.java
+)
+```
+
+For simple cases without extra fields, use the built-in `SimpleStoredUser`:
+
+```kotlin
+val user = SimpleStoredUser(
+    id = "user-123",
+    displayName = "Alice",
+    username = "alice",
+    email = "alice@example.com"
 )
 ```
 
