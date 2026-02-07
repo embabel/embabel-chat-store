@@ -3,7 +3,6 @@ package com.embabel.chat.store.model
 import com.embabel.chat.AssistantMessage
 import com.embabel.chat.Message
 import com.embabel.chat.MessageRole
-import com.embabel.chat.StoredMessage
 import com.embabel.chat.SystemMessage
 import com.embabel.chat.UserMessage
 import org.drivine.annotation.Direction
@@ -50,12 +49,12 @@ data class MessageData(
 ) {
     companion object {
         /**
-         * Create MessageData from any [StoredMessage] (including agent-api Message types).
+         * Create MessageData from any [Message] (including agent-api Message types).
          */
         @JvmStatic
         @JvmOverloads
         fun from(
-            message: StoredMessage,
+            message: Message,
             messageId: String = UUID.randomUUID().toString()
         ): MessageData = MessageData(
             messageId = messageId,
@@ -77,7 +76,7 @@ data class MessageData(
 
 /**
  * A message stored in a chat session, with its author and recipient relationships.
- * Implements [StoredMessage] for compatibility with agent-api.
+ * Implements [Message] for compatibility with agent-api.
  *
  * This is a GraphView that includes:
  * - The message node data ([MessageData])
@@ -113,7 +112,7 @@ data class SimpleStoredMessage(
      */
     @GraphRelationship(type = "SENT_TO", direction = Direction.OUTGOING)
     val recipient: StoredUser? = null
-) : StoredMessage {
+) : Message {
     // Convenience accessors for common properties
     val messageId: String get() = message.messageId
     override val role: MessageRole get() = message.role

@@ -16,7 +16,7 @@
 package com.embabel.chat.event
 
 import com.embabel.chat.MessageRole
-import com.embabel.chat.StoredMessage
+import com.embabel.chat.Message
 import com.embabel.common.core.types.Timestamped
 import java.time.Instant
 
@@ -98,7 +98,7 @@ data class MessageEvent(
     val fromUserId: String? = null,
     val toUserId: String? = null,
     val title: String? = null,
-    val message: StoredMessage? = null,
+    val message: Message? = null,
     val content: String? = null,
     val role: MessageRole? = null,
     val error: Throwable? = null,
@@ -111,7 +111,7 @@ data class MessageEvent(
          */
         fun added(
             conversationId: String,
-            message: StoredMessage,
+            message: Message,
             fromUserId: String? = null,
             toUserId: String? = null,
             title: String? = null
@@ -131,7 +131,7 @@ data class MessageEvent(
          */
         fun persisted(
             conversationId: String,
-            message: StoredMessage,
+            message: Message,
             fromUserId: String? = null,
             toUserId: String? = null,
             title: String? = null

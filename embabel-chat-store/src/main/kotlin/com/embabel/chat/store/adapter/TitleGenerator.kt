@@ -15,7 +15,7 @@
  */
 package com.embabel.chat.store.adapter
 
-import com.embabel.chat.StoredMessage
+import com.embabel.chat.Message
 
 /**
  * Strategy for generating conversation titles from messages.
@@ -30,7 +30,7 @@ fun interface TitleGenerator {
      * @param message the message to generate a title from (typically the first user message)
      * @return a short title for the conversation
      */
-    suspend fun generate(message: StoredMessage): String
+    suspend fun generate(message: Message): String
 
     companion object {
         /**
@@ -64,7 +64,7 @@ class TruncatingTitleGenerator(
     private val ellipsis: String = "..."
 ) : TitleGenerator {
 
-    override suspend fun generate(message: StoredMessage): String {
+    override suspend fun generate(message: Message): String {
         val content = message.content.trim()
             .replace("\n", " ")
             .replace(Regex("\\s+"), " ")
@@ -88,7 +88,7 @@ class FirstSentenceTitleGenerator(
 
     private val sentenceEnders = Regex("[.!?]")
 
-    override suspend fun generate(message: StoredMessage): String {
+    override suspend fun generate(message: Message): String {
         val content = message.content.trim()
             .replace("\n", " ")
             .replace(Regex("\\s+"), " ")
@@ -144,7 +144,7 @@ class LlmTitleGenerator(
     private val llmCall: suspend (String) -> String
 ) : TitleGenerator {
 
-    override suspend fun generate(message: StoredMessage): String {
+    override suspend fun generate(message: Message): String {
         return try {
             val fullPrompt = prompt + message.content
             llmCall(fullPrompt)
@@ -175,7 +175,7 @@ class FallbackTitleGenerator(
     private val fallback: TitleGenerator
 ) : TitleGenerator {
 
-    override suspend fun generate(message: StoredMessage): String {
+    override suspend fun generate(message: Message): String {
         return try {
             primary.generate(message)
         } catch (e: Exception) {
