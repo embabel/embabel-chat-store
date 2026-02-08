@@ -82,6 +82,31 @@ class StoredConversationFactory @JvmOverloads constructor(
     }
 
     /**
+     * Load an existing conversation from storage.
+     *
+     * If the session exists, returns a [StoredConversation] that will load
+     * messages from the repository. The session owner becomes the default user
+     * for message attribution.
+     *
+     * @param id the conversation/session ID to load
+     * @return the conversation if found, null otherwise
+     */
+    override fun load(id: String): Conversation? {
+        return repository.findBySessionId(id).orElse(null)?.let { session ->
+            StoredConversation(
+                id = id,
+                repository = repository,
+                eventPublisher = eventPublisher,
+                user = session.owner,
+                agent = null,
+                title = session.session.title,
+                titleGenerator = titleGenerator,
+                scope = scope
+            )
+        }
+    }
+
+    /**
      * Create a conversation for a 1-1 chat between a user and an agent.
      *
      * Messages are automatically attributed based on role:
