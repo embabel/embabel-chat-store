@@ -25,6 +25,10 @@ jobs:
       - name: Configure testcontainers
         run: echo "testcontainers.reuse.enable=true" >> ~/.testcontainers.properties
 
+      # Docker 29+ raised minimum API version to 1.44; Testcontainers 1.x defaults to 1.32
+      - name: Configure Testcontainers for Docker 29+
+        run: echo "api.version=1.44" > ~/.docker-java.properties
+
       - name: Build and test
         run: mvn -U -B test verify
 
@@ -46,6 +50,10 @@ jobs:
 
       - name: Configure testcontainers
         run: echo "testcontainers.reuse.enable=true" >> ~/.testcontainers.properties
+
+      # Docker 29+ raised minimum API version to 1.44; Testcontainers 1.x defaults to 1.32
+      - name: Configure Testcontainers for Docker 29+
+        run: echo "api.version=1.44" > ~/.docker-java.properties
 
       - name: Build and test
         run: mvn -U -B test verify
