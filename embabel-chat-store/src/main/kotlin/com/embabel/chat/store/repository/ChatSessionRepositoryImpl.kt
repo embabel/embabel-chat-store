@@ -1,5 +1,6 @@
 package com.embabel.chat.store.repository
 
+import com.embabel.chat.store.event.SessionCreatedEvent
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.SessionData
 import com.embabel.chat.store.model.SimpleStoredMessage
@@ -7,6 +8,7 @@ import com.embabel.chat.store.model.StoredSession
 import com.embabel.chat.store.model.StoredUser
 import org.drivine.manager.GraphObjectManager
 import org.slf4j.LoggerFactory
+import org.springframework.context.ApplicationEventPublisher
 import org.springframework.transaction.annotation.Transactional
 import java.time.Instant
 import java.util.Optional
@@ -19,7 +21,8 @@ import java.util.Optional
  * uses basic GraphObjectManager operations.
  */
 open class ChatSessionRepositoryImpl(
-    private val graphObjectManager: GraphObjectManager
+    private val graphObjectManager: GraphObjectManager,
+    private val eventPublisher: ApplicationEventPublisher? = null
 ) : ChatSessionRepository {
 
     private val logger = LoggerFactory.getLogger(ChatSessionRepositoryImpl::class.java)
@@ -38,7 +41,9 @@ open class ChatSessionRepositoryImpl(
             messages = emptyList()
         )
 
-        return graphObjectManager.save(session)
+        return graphObjectManager.save(session).also {
+            eventPublisher?.publishEvent(SessionCreatedEvent(it))
+        }
     }
 
     @Transactional
@@ -68,7 +73,9 @@ open class ChatSessionRepositoryImpl(
             messages = listOf(message)
         )
 
-        return graphObjectManager.save(session)
+        return graphObjectManager.save(session).also {
+            eventPublisher?.publishEvent(SessionCreatedEvent(it))
+        }
     }
 
     @Transactional(readOnly = true)

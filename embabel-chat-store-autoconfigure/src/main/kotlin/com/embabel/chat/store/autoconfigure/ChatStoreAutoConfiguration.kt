@@ -20,6 +20,7 @@ import com.embabel.chat.ConversationFactoryProvider
 import com.embabel.chat.MapConversationFactoryProvider
 import com.embabel.chat.store.adapter.StoredConversationFactory
 import com.embabel.chat.store.adapter.TitleGenerator
+import com.embabel.chat.store.event.SessionEventAwaiter
 import com.embabel.chat.store.repository.ChatSessionRepository
 import com.embabel.chat.support.InMemoryConversationFactory
 import org.slf4j.LoggerFactory
@@ -75,10 +76,17 @@ open class ChatStoreAutoConfiguration {
      * - [TitleGenerator] - for auto-generating session titles
      * - [ApplicationEventPublisher] - for message lifecycle events
      */
+    @Bean
+    @ConditionalOnMissingBean(SessionEventAwaiter::class)
+    open fun sessionEventAwaiter(): SessionEventAwaiter {
+        return SessionEventAwaiter()
+    }
+
     @Bean("storedConversationFactory")
     @ConditionalOnMissingBean(name = ["storedConversationFactory"])
     open fun storedConversationFactory(
         repository: ChatSessionRepository,
+        sessionEventAwaiter: SessionEventAwaiter,
         @Autowired(required = false) titleGenerator: TitleGenerator?,
         @Autowired(required = false) eventPublisher: ApplicationEventPublisher?
     ): ConversationFactory {
@@ -90,6 +98,7 @@ open class ChatStoreAutoConfiguration {
 
         return StoredConversationFactory(
             repository = repository,
+            sessionEventAwaiter = sessionEventAwaiter,
             eventPublisher = eventPublisher,
             titleGenerator = titleGenerator
         )

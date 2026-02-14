@@ -20,6 +20,7 @@ import com.embabel.chat.Conversation
 import com.embabel.chat.ConversationFactory
 import com.embabel.chat.ConversationStoreType
 import com.embabel.chat.store.model.StoredUser
+import com.embabel.chat.store.event.SessionEventAwaiter
 import com.embabel.chat.store.repository.ChatSessionRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -59,12 +60,14 @@ import org.springframework.context.ApplicationEventPublisher
  * - Agent-to-agent communication patterns
  *
  * @param repository the repository for persistence operations
+ * @param sessionEventAwaiter awaiter for handling session creation race conditions
  * @param eventPublisher optional event publisher for message lifecycle events
  * @param titleGenerator optional generator for auto-generating session titles
  * @param scope coroutine scope for async operations
  */
 class StoredConversationFactory @JvmOverloads constructor(
     private val repository: ChatSessionRepository,
+    private val sessionEventAwaiter: SessionEventAwaiter,
     private val eventPublisher: ApplicationEventPublisher? = null,
     private val titleGenerator: TitleGenerator? = null,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -96,6 +99,7 @@ class StoredConversationFactory @JvmOverloads constructor(
             StoredConversation(
                 id = id,
                 repository = repository,
+                sessionEventAwaiter = sessionEventAwaiter,
                 eventPublisher = eventPublisher,
                 user = session.owner,
                 agent = null,
@@ -144,6 +148,7 @@ class StoredConversationFactory @JvmOverloads constructor(
         return StoredConversation(
             id = id,
             repository = repository,
+            sessionEventAwaiter = sessionEventAwaiter,
             eventPublisher = eventPublisher,
             user = user,
             agent = agent,

@@ -21,10 +21,13 @@ import com.embabel.chat.Conversation
 import com.embabel.chat.Message
 import com.embabel.chat.MessageRole
 import com.embabel.chat.event.MessageEvent
+import com.embabel.chat.store.event.SessionEventAwaiter
 import com.embabel.chat.store.model.MessageData
+import com.embabel.chat.store.model.StoredSession
 import com.embabel.chat.store.model.StoredUser
 import com.embabel.chat.store.repository.ChatSessionRepository
 import com.embabel.chat.support.InMemoryAssetTracker
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -63,11 +66,15 @@ import java.util.UUID
  * @param agent the AI/system user participant (author of ASSISTANT messages, recipient of USER messages)
  * @param title the session title (included in events for UI display)
  * @param titleGenerator optional generator for auto-generating session title from first message
+ * @param sessionEventAwaiter awaiter for handling session creation race conditions.
+ *   Message persistence will wait for the session to be created rather than
+ *   failing immediately if the session doesn't exist yet.
  * @param scope coroutine scope for async operations (defaults to IO dispatcher with SupervisorJob)
  */
 class StoredConversation(
     override val id: String,
     private val repository: ChatSessionRepository,
+    private val sessionEventAwaiter: SessionEventAwaiter,
     private val eventPublisher: ApplicationEventPublisher? = null,
     private val user: StoredUser? = null,
     private val agent: StoredUser? = null,
@@ -185,6 +192,10 @@ class StoredConversation(
         val messageData = MessageData.from(message, messageId = UUID.randomUUID().toString())
         val isFirstMessage = messages.isEmpty()
 
+        // Register interest in session creation BEFORE the async launch,
+        // so we don't miss the event if it fires between the first attempt and the await
+        val signal = sessionEventAwaiter.register(id)
+
         // Publish ADDED event synchronously before async persistence
         eventPublisher?.publishEvent(
             MessageEvent.added(id, message, from?.id, to?.id, title)
@@ -192,7 +203,7 @@ class StoredConversation(
 
         scope.launch {
             try {
-                val updatedSession = repository.addMessage(id, messageData, from, to)
+                val updatedSession = addMessageWithAwait(id, messageData, from, to, signal)
                 val persistedMessage = updatedSession.messages.last().toMessage()
 
                 // Generate title from first message if no title exists
@@ -223,9 +234,38 @@ class StoredConversation(
                         title = title
                     )
                 )
+            } finally {
+                sessionEventAwaiter.unregister(id, signal)
             }
         }
 
         return message
+    }
+
+    /**
+     * Attempt to add a message, waiting for the session to be created if it doesn't exist yet.
+     *
+     * On the first attempt, if the session is not found, this suspends until a
+     * [SessionCreatedEvent] is received for this session, then retries once.
+     */
+    private suspend fun addMessageWithAwait(
+        sessionId: String,
+        messageData: MessageData,
+        author: StoredUser?,
+        recipient: StoredUser?,
+        signal: CompletableDeferred<Unit>
+    ): StoredSession {
+        return try {
+            repository.addMessage(sessionId, messageData, author, recipient)
+        } catch (e: IllegalArgumentException) {
+            if (e.message?.contains("Session not found") != true) throw e
+
+            logger.warn(
+                "Session {} not yet available for message {}, awaiting SessionCreatedEvent",
+                sessionId, messageData.messageId
+            )
+            sessionEventAwaiter.awaitSession(signal)
+            repository.addMessage(sessionId, messageData, author, recipient)
+        }
     }
 }
