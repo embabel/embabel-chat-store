@@ -15,9 +15,11 @@
  */
 package com.embabel.chat.store.autoconfigure
 
+import com.embabel.agent.api.common.Ai
 import com.embabel.chat.ConversationFactory
 import com.embabel.chat.ConversationFactoryProvider
 import com.embabel.chat.MapConversationFactoryProvider
+import com.embabel.chat.store.adapter.LlmTitleGenerator
 import com.embabel.chat.store.adapter.StoredConversationFactory
 import com.embabel.chat.store.adapter.TitleGenerator
 import com.embabel.chat.store.event.SessionEventAwaiter
@@ -26,6 +28,7 @@ import com.embabel.chat.support.InMemoryConversationFactory
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.autoconfigure.AutoConfiguration
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
@@ -64,6 +67,22 @@ import org.springframework.context.annotation.Bean
 open class ChatStoreAutoConfiguration {
 
     private val logger = LoggerFactory.getLogger(ChatStoreAutoConfiguration::class.java)
+
+    /**
+     * Creates an [LlmTitleGenerator] that uses [Ai] to generate session titles.
+     *
+     * Only created if:
+     * - No existing [TitleGenerator] bean
+     * - An [Ai] bean is available (from embabel-agent)
+     *
+     * Apps can override by defining their own [TitleGenerator] bean.
+     */
+    @Bean
+    @ConditionalOnMissingBean(TitleGenerator::class)
+    @ConditionalOnBean(Ai::class)
+    open fun titleGenerator(ai: Ai): TitleGenerator = LlmTitleGenerator { prompt ->
+        ai.withDefaultLlm().generateText(prompt)
+    }
 
     /**
      * Creates a [StoredConversationFactory] for persistent conversations.
