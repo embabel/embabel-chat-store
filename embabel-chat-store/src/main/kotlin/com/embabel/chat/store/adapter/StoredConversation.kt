@@ -32,6 +32,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
 import org.springframework.context.ApplicationEventPublisher
 import java.util.UUID
@@ -40,12 +41,12 @@ import java.util.UUID
  * A [Conversation] implementation that persists messages to Neo4j via [ChatSessionRepository].
  *
  * This adapter provides persistence for conversations. Messages added via [addMessage]
- * are persisted **asynchronously**:
+ * are persisted **synchronously** (the DB write blocks until complete), while post-persistence
+ * tasks (title generation, PERSISTED event) run asynchronously:
  *
- * 1. `addMessage()` returns immediately (non-blocking)
- * 2. Message is converted to MessageData and persisted in background
- * 3. On success: [MessageEvent] with status PERSISTED is published
- * 4. On failure: [MessageEvent] with status PERSISTENCE_FAILED is published
+ * 1. `addMessage()` persists the message to the DB (blocking)
+ * 2. On success: title generation and [MessageEvent] with status PERSISTED are published asynchronously
+ * 3. On failure: [MessageEvent] with status PERSISTENCE_FAILED is published and the exception is rethrown
  *
  * ## Message Attribution
  *
@@ -105,11 +106,11 @@ class StoredConversation(
      * - ASSISTANT messages: from=[agent], to=[user]
      * - SYSTEM messages: from=null, to=[user]
      *
-     * This method returns immediately. The message is persisted in the background,
-     * and events are published on success or failure.
+     * This method blocks until the message is persisted to the DB.
+     * Post-persistence tasks (title generation, PERSISTED event) run asynchronously.
      *
      * @param message the message to add
-     * @return the message (returned immediately, before persistence completes)
+     * @return the message (returned after persistence completes)
      */
     override fun addMessage(message: Message): Message {
         val (from, to) = when (message.role) {
@@ -196,14 +197,37 @@ class StoredConversation(
         // so we don't miss the event if it fires between the first attempt and the await
         val signal = sessionEventAwaiter.register(id)
 
-        // Publish ADDED event synchronously before async persistence
+        // Publish ADDED event synchronously before persistence
         eventPublisher?.publishEvent(
             MessageEvent.added(id, message, from?.id, to?.id, title)
         )
 
+        // DB write — synchronous, blocks until persisted so that subsequent
+        // reads via getMessages() see this message immediately
+        val updatedSession = try {
+            runBlocking {
+                addMessageWithAwait(id, messageData, from, to, signal)
+            }
+        } catch (e: Exception) {
+            logger.error("Failed to persist message to session {}: {}", id, e.message, e)
+            eventPublisher?.publishEvent(
+                MessageEvent.persistenceFailed(
+                    conversationId = id,
+                    content = message.content,
+                    role = message.role,
+                    error = e,
+                    fromUserId = from?.id,
+                    toUserId = to?.id,
+                    title = title
+                )
+            )
+            sessionEventAwaiter.unregister(id, signal)
+            throw e
+        }
+
+        // Title generation + PERSISTED event — still async (not on critical path)
         scope.launch {
             try {
-                val updatedSession = addMessageWithAwait(id, messageData, from, to, signal)
                 val persistedMessage = updatedSession.messages.last().toMessage()
 
                 // Generate title from first message if no title exists
@@ -222,18 +246,7 @@ class StoredConversation(
                 )
                 logger.debug("Message {} persisted to session {}", messageData.messageId, id)
             } catch (e: Exception) {
-                logger.error("Failed to persist message to session {}: {}", id, e.message, e)
-                eventPublisher?.publishEvent(
-                    MessageEvent.persistenceFailed(
-                        conversationId = id,
-                        content = message.content,
-                        role = message.role,
-                        error = e,
-                        fromUserId = from?.id,
-                        toUserId = to?.id,
-                        title = title
-                    )
-                )
+                logger.error("Failed to publish persistence event for session {}: {}", id, e.message, e)
             } finally {
                 sessionEventAwaiter.unregister(id, signal)
             }
