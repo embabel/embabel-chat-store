@@ -107,6 +107,17 @@ interface ChatSessionRepository {
      */
     fun getMessages(sessionId: String): List<SimpleStoredMessage>
 
+    // ==================== Message Updates ====================
+
+    /**
+     * Update the narration text for a message.
+     * Finds the latest assistant message without narration in the given session.
+     *
+     * @param conversationId the session/conversation ID
+     * @param narration the TTS-friendly narration text
+     */
+    fun updateMessageNarration(conversationId: String, narration: String)
+
     // ==================== Bulk Operations ====================
 
     /**

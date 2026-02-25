@@ -4,6 +4,7 @@ import org.drivine.annotation.Direction
 import org.drivine.annotation.GraphRelationship
 import org.drivine.annotation.GraphView
 import org.drivine.annotation.Root
+import org.drivine.annotation.SortedBy
 
 /**
  * Complete session view including owner and messages.
@@ -37,6 +38,7 @@ data class StoredSession(
      * Messages in this session, sorted by messageId (UUIDv7 = chronological order).
      */
     @GraphRelationship(type = "HAS_MESSAGE", direction = Direction.OUTGOING)
+    @SortedBy("message.messageId")
     val messages: List<SimpleStoredMessage> = emptyList()
 ) {
     /**

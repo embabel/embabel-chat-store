@@ -58,6 +58,13 @@
             <artifactId>embabel-agent-api</artifactId>
         </dependency>
 
+        <!-- UUID v7 Support -->
+        <dependency>
+            <groupId>com.fasterxml.uuid</groupId>
+            <artifactId>java-uuid-generator</artifactId>
+            <version>5.2.0</version>
+        </dependency>
+
         <!-- Logging -->
         <dependency>
             <groupId>org.slf4j</groupId>

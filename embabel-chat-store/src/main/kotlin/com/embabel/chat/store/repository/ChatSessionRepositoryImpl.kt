@@ -5,6 +5,7 @@ import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.SessionData
 import com.embabel.chat.store.model.SimpleStoredMessage
 import com.embabel.chat.store.model.StoredSession
+import com.embabel.chat.MessageRole
 import com.embabel.chat.store.model.StoredUser
 import org.drivine.manager.GraphObjectManager
 import org.slf4j.LoggerFactory
@@ -134,6 +135,27 @@ open class ChatSessionRepositoryImpl(
     override fun getMessages(sessionId: String): List<SimpleStoredMessage> {
         val session = findBySessionId(sessionId).orElse(null)
         return session?.messages?.sortedBy { it.messageId } ?: emptyList()
+    }
+
+    @Transactional
+    override fun updateMessageNarration(conversationId: String, narration: String) {
+        val session = findBySessionId(conversationId).orElse(null)
+        if (session == null) {
+            logger.warn("Cannot update narration: session not found for {}", conversationId)
+            return
+        }
+        val latestAssistant = session.messages
+            .filter { it.role == MessageRole.ASSISTANT && it.narration == null }
+            .maxByOrNull { it.message.createdAt }
+        if (latestAssistant == null) {
+            logger.debug("No un-narrated assistant message found in session {}", conversationId)
+            return
+        }
+        val updated = latestAssistant.copy(
+            message = latestAssistant.message.copy(narration = narration)
+        )
+        graphObjectManager.save(updated)
+        logger.debug("Updated narration for message {} in session {}", latestAssistant.messageId, conversationId)
     }
 
     @Transactional

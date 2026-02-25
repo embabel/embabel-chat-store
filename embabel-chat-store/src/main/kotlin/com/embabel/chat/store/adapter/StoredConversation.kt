@@ -34,8 +34,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
+import com.embabel.chat.store.util.UUIDv7
 import org.springframework.context.ApplicationEventPublisher
-import java.util.UUID
 
 /**
  * A [Conversation] implementation that persists messages to Neo4j via [ChatSessionRepository].
@@ -190,7 +190,7 @@ class StoredConversation(
         from: StoredUser?,
         to: StoredUser?
     ): Message {
-        val messageData = MessageData.from(message, messageId = UUID.randomUUID().toString())
+        val messageData = MessageData.from(message, messageId = UUIDv7.generateString())
         val isFirstMessage = messages.isEmpty()
 
         // Register interest in session creation BEFORE the async launch,
