@@ -29,3 +29,7 @@
 
 # Runtime artifacts
 *.pid
+
+# Code generation (Gradle)
+**/codegen-gradle/.gradle/
+**/codegen-gradle/build/
