@@ -99,3 +99,15 @@ data class SimpleStoredUser(
     override val username: String,
     override val email: String?
 ) : StoredUser
+
+/**
+ * Lightweight user reference for write operations.
+ * Contains only the node ID — prevents Drivine from overwriting user properties
+ * (e.g., persona) when saving messages with author/recipient relationships.
+ *
+ * @see AttributedMessage
+ */
+@NodeFragment(labels = ["User"])
+data class UserRef(
+    @NodeId val id: String
+)

@@ -106,12 +106,14 @@ open class ChatStoreAutoConfiguration {
     open fun storedConversationFactory(
         repository: ChatSessionRepository,
         sessionEventAwaiter: SessionEventAwaiter,
+        properties: ChatStoreProperties,
         @Autowired(required = false) titleGenerator: TitleGenerator?,
         @Autowired(required = false) eventPublisher: ApplicationEventPublisher?
     ): ConversationFactory {
         logger.info(
-            "Creating StoredConversationFactory (titleGenerator={}, eventPublisher={})",
+            "Creating StoredConversationFactory (titleGenerator={}, titleAfterMessageCount={}, eventPublisher={})",
             titleGenerator?.javaClass?.simpleName ?: "none",
+            properties.titleAfterMessageCount,
             if (eventPublisher != null) "present" else "none"
         )
 
@@ -119,7 +121,8 @@ open class ChatStoreAutoConfiguration {
             repository = repository,
             sessionEventAwaiter = sessionEventAwaiter,
             eventPublisher = eventPublisher,
-            titleGenerator = titleGenerator
+            titleGenerator = titleGenerator,
+            titleAfterMessageCount = properties.titleAfterMessageCount
         )
     }
 

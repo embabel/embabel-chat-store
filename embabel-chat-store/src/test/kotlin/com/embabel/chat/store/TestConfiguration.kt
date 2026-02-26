@@ -39,7 +39,7 @@ class TestApplication {
         // Library consumers must do this for their own user type.
         pm.registerSubtype(
             StoredUser::class.java,
-            "TestUser|User",  // Composite label key (sorted alphabetically)
+            listOf("TestUser", "User"),
             TestSessionUser::class.java
         )
         return pm

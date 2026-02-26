@@ -81,6 +81,7 @@ class StoredConversation(
     private val agent: StoredUser? = null,
     private var title: String? = null,
     private val titleGenerator: TitleGenerator? = null,
+    private val titleAfterMessageCount: Int = 1,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
     override val assetTracker: AssetTracker = InMemoryAssetTracker()
 ) : Conversation {
@@ -191,7 +192,6 @@ class StoredConversation(
         to: StoredUser?
     ): Message {
         val messageData = MessageData.from(message, messageId = UUIDv7.generateString())
-        val isFirstMessage = messages.isEmpty()
 
         // Register interest in session creation BEFORE the async launch,
         // so we don't miss the event if it fires between the first attempt and the await
@@ -230,12 +230,14 @@ class StoredConversation(
             try {
                 val persistedMessage = updatedSession.messages.last().toMessage()
 
-                // Generate title from first message if no title exists
-                if (isFirstMessage && titleGenerator != null && title.isNullOrBlank()) {
+                // Generate title once we have enough conversation context
+                val messageCount = updatedSession.messages.size
+                if (messageCount >= titleAfterMessageCount && titleGenerator != null && title.isNullOrBlank()) {
                     try {
-                        title = titleGenerator.generate(message)
+                        val allMessages = updatedSession.messages.map { it.toMessage() }
+                        title = titleGenerator.generate(allMessages)
                         repository.updateSessionTitle(id, title!!)
-                        logger.debug("Generated title '{}' for session {}", title, id)
+                        logger.debug("Generated title '{}' for session {} (after {} messages)", title, id, messageCount)
                     } catch (e: Exception) {
                         logger.warn("Failed to generate title for session {}: {}", id, e.message)
                     }

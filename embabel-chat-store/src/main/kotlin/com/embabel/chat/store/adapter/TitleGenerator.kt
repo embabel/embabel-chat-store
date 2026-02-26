@@ -25,19 +25,19 @@ import com.embabel.chat.Message
 fun interface TitleGenerator {
 
     /**
-     * Generate a title from the given message.
+     * Generate a title from the conversation messages.
      *
-     * @param message the message to generate a title from (typically the first user message)
+     * @param messages the messages to generate a title from
      * @return a short title for the conversation
      */
-    suspend fun generate(message: Message): String
+    suspend fun generate(messages: List<Message>): String
 
     companion object {
         /**
          * Default prompt for LLM-based title generation.
          */
-        const val DEFAULT_PROMPT = "Generate a short title (max 6 words) for this message. " +
-            "Reply with ONLY the title, no quotes or punctuation: "
+        const val DEFAULT_PROMPT = "Generate a short title (max 6 words) for this conversation. " +
+            "Reply with ONLY the title, no quotes or punctuation:\n\n"
 
         /**
          * Default maximum title length.
@@ -52,7 +52,7 @@ fun interface TitleGenerator {
 }
 
 /**
- * Simple title generator that truncates the message content.
+ * Simple title generator that truncates the first user message.
  *
  * Useful as a fast, non-LLM fallback.
  *
@@ -64,8 +64,12 @@ class TruncatingTitleGenerator(
     private val ellipsis: String = "..."
 ) : TitleGenerator {
 
-    override suspend fun generate(message: Message): String {
-        val content = message.content.trim()
+    override suspend fun generate(messages: List<Message>): String {
+        val firstUserMessage = messages.firstOrNull { it.role == com.embabel.chat.MessageRole.USER }
+            ?: messages.firstOrNull()
+            ?: return TitleGenerator.DEFAULT_FALLBACK
+
+        val content = firstUserMessage.content.trim()
             .replace("\n", " ")
             .replace(Regex("\\s+"), " ")
 
@@ -78,7 +82,7 @@ class TruncatingTitleGenerator(
 }
 
 /**
- * Title generator that extracts the first sentence or phrase.
+ * Title generator that extracts the first sentence from the first user message.
  *
  * @param maxLength maximum title length (default 50)
  */
@@ -88,8 +92,12 @@ class FirstSentenceTitleGenerator(
 
     private val sentenceEnders = Regex("[.!?]")
 
-    override suspend fun generate(message: Message): String {
-        val content = message.content.trim()
+    override suspend fun generate(messages: List<Message>): String {
+        val firstUserMessage = messages.firstOrNull { it.role == com.embabel.chat.MessageRole.USER }
+            ?: messages.firstOrNull()
+            ?: return TitleGenerator.DEFAULT_FALLBACK
+
+        val content = firstUserMessage.content.trim()
             .replace("\n", " ")
             .replace(Regex("\\s+"), " ")
 
@@ -108,29 +116,10 @@ class FirstSentenceTitleGenerator(
 }
 
 /**
- * Title generator that uses an LLM to create a concise title.
+ * Title generator that uses an LLM to create a concise title from the conversation.
  *
- * The LLM call is abstracted via a suspend function, allowing flexible integration
- * with different LLM providers (PromptRunner, Chatbot, direct API calls, etc.).
- *
- * ## Usage with PromptRunner
- *
- * ```kotlin
- * val titleGenerator = LlmTitleGenerator { prompt ->
- *     promptRunner.generate(prompt)
- * }
- * ```
- *
- * ## Usage with Chatbot
- *
- * ```kotlin
- * val titleGenerator = LlmTitleGenerator { prompt ->
- *     // Create one-shot session for title generation
- *     val session = chatbot.createSession(user, outputChannel, null)
- *     session.onUserMessage(UserMessage(prompt))
- *     capturedResponse
- * }
- * ```
+ * When multiple messages are available, formats them as a conversation transcript
+ * so the LLM can generate a title that captures the topic, not just the greeting.
  *
  * @param prompt the prompt template (default asks for 6-word title)
  * @param maxLength maximum title length (default 100)
@@ -144,9 +133,13 @@ class LlmTitleGenerator(
     private val llmCall: suspend (String) -> String
 ) : TitleGenerator {
 
-    override suspend fun generate(message: Message): String {
+    override suspend fun generate(messages: List<Message>): String {
         return try {
-            val fullPrompt = prompt + message.content
+            val transcript = messages.joinToString("\n") { msg ->
+                val content = if (msg.content.length > 200) msg.content.take(200) + "..." else msg.content
+                "${msg.role.name.lowercase()}: $content"
+            }
+            val fullPrompt = prompt + transcript
             llmCall(fullPrompt)
                 .trim()
                 .take(maxLength)
@@ -175,11 +168,11 @@ class FallbackTitleGenerator(
     private val fallback: TitleGenerator
 ) : TitleGenerator {
 
-    override suspend fun generate(message: Message): String {
+    override suspend fun generate(messages: List<Message>): String {
         return try {
-            primary.generate(message)
+            primary.generate(messages)
         } catch (e: Exception) {
-            fallback.generate(message)
+            fallback.generate(messages)
         }
     }
 }

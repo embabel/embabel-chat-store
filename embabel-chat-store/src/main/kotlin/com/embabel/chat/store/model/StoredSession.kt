@@ -3,6 +3,8 @@ package com.embabel.chat.store.model
 import org.drivine.annotation.Direction
 import org.drivine.annotation.GraphRelationship
 import org.drivine.annotation.GraphView
+import org.drivine.annotation.NodeFragment
+import org.drivine.annotation.NodeId
 import org.drivine.annotation.Root
 import org.drivine.annotation.SortedBy
 
@@ -47,3 +49,15 @@ data class StoredSession(
     fun withMessage(message: SimpleStoredMessage): StoredSession =
         copy(messages = messages + message)
 }
+
+/**
+ * Lightweight session reference for write operations.
+ * Contains only the session ID — used as the root of [NewMessage] to create
+ * the HAS_MESSAGE relationship without loading or modifying session properties.
+ *
+ * @see NewMessageInSession
+ */
+@NodeFragment(labels = ["ChatSession"])
+data class SessionRef(
+    @NodeId val sessionId: String
+)

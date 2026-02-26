@@ -132,3 +132,42 @@ data class SimpleStoredMessage(
      */
     fun toMessage(): Message = message.toMessage()
 }
+
+/**
+ * A message with lightweight user attribution for write operations.
+ * Uses [UserRef] (ID-only) instead of full [StoredUser], so Drivine's
+ * MERGE on the user node has zero fields to SET — preventing stale
+ * cached properties from being written back to the DB.
+ *
+ * @see NewMessageInSession
+ */
+@GraphView
+data class AttributedMessage(
+    @Root val message: MessageData,
+
+    @GraphRelationship(type = "AUTHORED_BY", direction = Direction.OUTGOING)
+    val author: UserRef? = null,
+
+    @GraphRelationship(type = "SENT_TO", direction = Direction.OUTGOING)
+    val recipient: UserRef? = null
+)
+
+/**
+ * Write-optimized view for adding a new message to an existing session.
+ *
+ * Rooted on [SessionRef] with OUTGOING HAS_MESSAGE to an [AttributedMessage].
+ * Since there is no prior load, Drivine has no snapshot and treats everything
+ * as new — creating the message node, user relationships, and session link
+ * without touching any existing node properties.
+ *
+ * This replaces the previous approach of loading the full [StoredSession] graph,
+ * appending a message, and re-saving — which could overwrite user properties
+ * (e.g., persona) with stale cached values via Drivine's dirty tracking.
+ */
+@GraphView
+data class NewMessageInSession(
+    @Root val session: SessionRef,
+
+    @GraphRelationship(type = "HAS_MESSAGE", direction = Direction.OUTGOING)
+    val message: AttributedMessage
+)

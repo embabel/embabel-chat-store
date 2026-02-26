@@ -27,4 +27,13 @@ class ChatStoreProperties {
      * Default: true
      */
     var enabled: Boolean = true
+
+    /**
+     * Number of messages in a conversation before a title is generated.
+     * Set to 1 for immediate title generation (legacy behavior).
+     * Higher values (e.g., 6) wait for enough context to generate a meaningful title,
+     * avoiding titles based on greetings like "Hey how are you?".
+     * Default: 1
+     */
+    var titleAfterMessageCount: Int = 1
 }

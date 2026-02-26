@@ -70,6 +70,7 @@ class StoredConversationFactory @JvmOverloads constructor(
     private val sessionEventAwaiter: SessionEventAwaiter,
     private val eventPublisher: ApplicationEventPublisher? = null,
     private val titleGenerator: TitleGenerator? = null,
+    private val titleAfterMessageCount: Int = 1,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 ) : ConversationFactory {
 
@@ -105,6 +106,7 @@ class StoredConversationFactory @JvmOverloads constructor(
                 agent = null,
                 title = session.session.title,
                 titleGenerator = titleGenerator,
+                titleAfterMessageCount = titleAfterMessageCount,
                 scope = scope
             )
         }
@@ -154,6 +156,7 @@ class StoredConversationFactory @JvmOverloads constructor(
             agent = agent,
             title = title,
             titleGenerator = titleGenerator,
+            titleAfterMessageCount = titleAfterMessageCount,
             scope = scope
         )
     }

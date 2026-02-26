@@ -1,13 +1,23 @@
 package com.embabel.chat.store.repository
 
 import com.embabel.chat.store.event.SessionCreatedEvent
+import com.embabel.chat.store.model.AttributedMessage
 import com.embabel.chat.store.model.MessageData
+import com.embabel.chat.store.model.NewMessageInSession
 import com.embabel.chat.store.model.SessionData
+import com.embabel.chat.store.model.SessionRef
 import com.embabel.chat.store.model.SimpleStoredMessage
 import com.embabel.chat.store.model.StoredSession
 import com.embabel.chat.MessageRole
 import com.embabel.chat.store.model.StoredUser
+import com.embabel.chat.store.model.UserRef
+import com.embabel.chat.store.model.deleteAll
+import com.embabel.chat.store.model.loadAll
+import com.embabel.chat.store.model.owner
+import org.drivine.manager.CascadeType
 import org.drivine.manager.GraphObjectManager
+import org.drivine.manager.delete
+import org.drivine.manager.load
 import org.slf4j.LoggerFactory
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.transaction.annotation.Transactional
@@ -17,9 +27,8 @@ import java.util.Optional
 /**
  * Drivine-based implementation of ChatSessionRepository.
  *
- * Uses GraphObjectManager for type-safe graph operations.
- * Note: Full DSL support requires code generation. This implementation
- * uses basic GraphObjectManager operations.
+ * Uses GraphObjectManager with reified type extensions and generated query DSL
+ * for type-safe graph operations.
  */
 open class ChatSessionRepositoryImpl(
     private val graphObjectManager: GraphObjectManager,
@@ -81,15 +90,18 @@ open class ChatSessionRepositoryImpl(
 
     @Transactional(readOnly = true)
     override fun findBySessionId(sessionId: String): Optional<StoredSession> {
-        val results = graphObjectManager.loadAll(StoredSession::class.java)
-            .filter { it.session.sessionId == sessionId }
-        return Optional.ofNullable(results.firstOrNull())
+        return Optional.ofNullable(
+            graphObjectManager.load<StoredSession>(sessionId)
+        )
     }
 
     @Transactional(readOnly = true)
     override fun listSessionsForUser(userId: String): List<StoredSession> {
-        return graphObjectManager.loadAll(StoredSession::class.java)
-            .filter { it.owner.id == userId }
+        return graphObjectManager.loadAll<StoredSession> {
+            where {
+                owner.id eq userId
+            }
+        }
     }
 
     @Transactional
@@ -105,7 +117,7 @@ open class ChatSessionRepositoryImpl(
 
     @Transactional
     override fun deleteSession(sessionId: String) {
-        graphObjectManager.delete(sessionId, StoredSession::class.java)
+        graphObjectManager.delete<StoredSession>(sessionId)
     }
 
     @Transactional
@@ -117,28 +129,36 @@ open class ChatSessionRepositoryImpl(
     ): StoredSession {
         logger.debug("Adding message {} to session {}", messageData.messageId, sessionId)
 
-        val session = findBySessionId(sessionId).orElseThrow {
-            IllegalArgumentException("Session not found: $sessionId")
+        // Verify session exists — MERGE on SessionRef would silently create a bare node
+        if (graphObjectManager.load<StoredSession>(sessionId) == null) {
+            throw IllegalArgumentException("Session not found: $sessionId")
         }
 
-        val message = SimpleStoredMessage(
-            message = messageData,
-            author = author,
-            recipient = recipient
+        val newMessage = NewMessageInSession(
+            session = SessionRef(sessionId = sessionId),
+            message = AttributedMessage(
+                message = messageData,
+                author = author?.let { UserRef(it.id) },
+                recipient = recipient?.let { UserRef(it.id) }
+            )
         )
+        graphObjectManager.save(newMessage, CascadeType.PRESERVE)
 
-        val updated = session.withMessage(message)
-        return graphObjectManager.save(updated)
+        return findBySessionId(sessionId).orElseThrow {
+            IllegalStateException("Session not found after adding message: $sessionId")
+        }
     }
 
     @Transactional(readOnly = true)
     override fun getMessages(sessionId: String): List<SimpleStoredMessage> {
-        val session = findBySessionId(sessionId).orElse(null)
-        return session?.messages?.sortedBy { it.messageId } ?: emptyList()
+        // Messages are returned in chronological order via @SortedBy on StoredSession.messages
+        return findBySessionId(sessionId).orElse(null)?.messages ?: emptyList()
     }
 
     @Transactional
     override fun updateMessageNarration(conversationId: String, narration: String) {
+        // Client-side filtering required: the DSL WHERE clause filters which sessions match,
+        // but still loads all messages within each matched session.
         val session = findBySessionId(conversationId).orElse(null)
         if (session == null) {
             logger.warn("Cannot update narration: session not found for {}", conversationId)
@@ -160,8 +180,6 @@ open class ChatSessionRepositoryImpl(
 
     @Transactional
     override fun deleteAll() {
-        graphObjectManager.loadAll(StoredSession::class.java).forEach {
-            graphObjectManager.delete(it.session.sessionId, StoredSession::class.java)
-        }
+        graphObjectManager.deleteAll<StoredSession> { }
     }
 }
