@@ -32,21 +32,22 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
 import com.embabel.chat.store.util.UUIDv7
 import org.springframework.context.ApplicationEventPublisher
+import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
  * A [Conversation] implementation that persists messages to Neo4j via [ChatSessionRepository].
  *
  * This adapter provides persistence for conversations. Messages added via [addMessage]
- * are persisted **synchronously** (the DB write blocks until complete), while post-persistence
- * tasks (title generation, PERSISTED event) run asynchronously:
+ * are persisted **asynchronously** to avoid blocking on DB latency, while an in-memory
+ * buffer ensures reads are always consistent:
  *
- * 1. `addMessage()` persists the message to the DB (blocking)
- * 2. On success: title generation and [MessageEvent] with status PERSISTED are published asynchronously
- * 3. On failure: [MessageEvent] with status PERSISTENCE_FAILED is published and the exception is rethrown
+ * 1. `addMessage()` adds the message to an in-memory pending buffer and launches async DB persistence
+ * 2. `messages` returns the merged view: DB messages + pending buffer (deduplicated by messageId)
+ * 3. On success: the message is removed from the pending buffer and [MessageEvent] PERSISTED is published
+ * 4. On failure: the message stays in the pending buffer and [MessageEvent] PERSISTENCE_FAILED is published
  *
  * ## Message Attribution
  *
@@ -57,8 +58,9 @@ import org.springframework.context.ApplicationEventPublisher
  *
  * ## Auto Title Generation
  *
- * If a [TitleGenerator] is provided, the session title is automatically generated
- * from the first message (if the session doesn't already have a title).
+ * An interim title is set from the first user message content so the session appears
+ * immediately in the UI. If a [TitleGenerator] is provided, it re-evaluates the title
+ * every [titleAfterMessageCount] messages, keeping it if still relevant.
  *
  * @param id the chat session ID (must already exist in the repository)
  * @param repository the repository for persistence operations
@@ -82,11 +84,14 @@ class StoredConversation(
     private var title: String? = null,
     private val titleGenerator: TitleGenerator? = null,
     private val titleAfterMessageCount: Int = 1,
+    private val interimTitleMaxLength: Int = TitleGenerator.DEFAULT_MAX_LENGTH,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
     override val assetTracker: AssetTracker = InMemoryAssetTracker()
 ) : Conversation {
 
     private val logger = LoggerFactory.getLogger(StoredConversation::class.java)
+
+    private val pendingMessages = ConcurrentLinkedQueue<MessageData>()
 
     /**
      * Returns true since this conversation is backed by persistent storage.
@@ -94,11 +99,16 @@ class StoredConversation(
     override fun persistent(): Boolean = true
 
     /**
-     * Messages loaded from the repository.
-     * Lazily refreshed on access.
+     * Messages loaded from the repository, merged with any pending (not yet persisted) messages.
+     * Pending messages that have already appeared in the DB result are deduplicated by messageId.
      */
     override val messages: List<Message>
-        get() = repository.getMessages(id).map { it.toMessage() }
+        get() {
+            val dbMessages = repository.getMessages(id)
+            val dbMessageIds = dbMessages.mapTo(HashSet()) { it.messageId }
+            val pending = pendingMessages.filter { it.messageId !in dbMessageIds }
+            return dbMessages.map { it.toMessage() } + pending.map { it.toMessage() }
+        }
 
     /**
      * Add a message using default [user] and [agent] for attribution based on role.
@@ -107,11 +117,11 @@ class StoredConversation(
      * - ASSISTANT messages: from=[agent], to=[user]
      * - SYSTEM messages: from=null, to=[user]
      *
-     * This method blocks until the message is persisted to the DB.
-     * Post-persistence tasks (title generation, PERSISTED event) run asynchronously.
+     * The message is added to an in-memory pending buffer and returned immediately.
+     * DB persistence runs asynchronously.
      *
      * @param message the message to add
-     * @return the message (returned after persistence completes)
+     * @return the message (returned immediately, before persistence completes)
      */
     override fun addMessage(message: Message): Message {
         val (from, to) = when (message.role) {
@@ -193,6 +203,19 @@ class StoredConversation(
     ): Message {
         val messageData = MessageData.from(message, messageId = UUIDv7.generateString())
 
+        // Generate an interim title from the first user message so the session
+        // appears immediately in the UI.  The LLM will replace it later once
+        // enough conversation context is available.
+        if (title.isNullOrBlank() && message.role == MessageRole.USER) {
+            title = truncateForTitle(message.content, interimTitleMaxLength)
+            try {
+                repository.updateSessionTitle(id, title!!)
+                logger.debug("Interim title '{}' for session {}", title, id)
+            } catch (e: Exception) {
+                logger.warn("Failed to set interim title for session {}: {}", id, e.message)
+            }
+        }
+
         // Register interest in session creation BEFORE the async launch,
         // so we don't miss the event if it fires between the first attempt and the await
         val signal = sessionEventAwaiter.register(id)
@@ -202,53 +225,62 @@ class StoredConversation(
             MessageEvent.added(id, message, from?.id, to?.id, title)
         )
 
-        // DB write — synchronous, blocks until persisted so that subsequent
-        // reads via getMessages() see this message immediately
-        val updatedSession = try {
-            runBlocking {
-                addMessageWithAwait(id, messageData, from, to, signal)
-            }
-        } catch (e: Exception) {
-            logger.error("Failed to persist message to session {}: {}", id, e.message, e)
-            eventPublisher?.publishEvent(
-                MessageEvent.persistenceFailed(
-                    conversationId = id,
-                    content = message.content,
-                    role = message.role,
-                    error = e,
-                    fromUserId = from?.id,
-                    toUserId = to?.id,
-                    title = title
-                )
-            )
-            sessionEventAwaiter.unregister(id, signal)
-            throw e
-        }
+        // Add to pending buffer so getMessages() returns this message immediately
+        pendingMessages.add(messageData)
 
-        // Title generation + PERSISTED event — still async (not on critical path)
+        // DB write — asynchronous, non-blocking. The pending buffer ensures
+        // consistent reads while the write is in flight.
         scope.launch {
             try {
-                val persistedMessage = updatedSession.messages.last().toMessage()
+                val updatedSession = addMessageWithAwait(id, messageData, from, to, signal)
 
-                // Generate title once we have enough conversation context
+                // Persisted — remove from pending buffer (DB is now the source of truth)
+                pendingMessages.remove(messageData)
+
+                // PERSISTED event
+                try {
+                    val persistedMessage = updatedSession.messages.last().toMessage()
+                    eventPublisher?.publishEvent(
+                        MessageEvent.persisted(id, persistedMessage, from?.id, to?.id, title)
+                    )
+                    logger.debug("Message {} persisted to session {}", messageData.messageId, id)
+                } catch (e: Exception) {
+                    logger.error("Failed to publish persistence event for session {}: {}", id, e.message, e)
+                }
+
+                // Title re-evaluation
                 val messageCount = updatedSession.messages.size
-                if (messageCount >= titleAfterMessageCount && titleGenerator != null && title.isNullOrBlank()) {
+                if (messageCount >= titleAfterMessageCount && titleGenerator != null
+                    && messageCount % titleAfterMessageCount == 0) {
                     try {
                         val allMessages = updatedSession.messages.map { it.toMessage() }
-                        title = titleGenerator.generate(allMessages)
-                        repository.updateSessionTitle(id, title!!)
-                        logger.debug("Generated title '{}' for session {} (after {} messages)", title, id, messageCount)
+                        val newTitle = titleGenerator.generate(allMessages, title)
+                        if (newTitle != title) {
+                            title = newTitle
+                            repository.updateSessionTitle(id, title!!)
+                            logger.debug("Updated title '{}' for session {} (at {} messages)", title, id, messageCount)
+                            eventPublisher?.publishEvent(
+                                MessageEvent.persisted(id, allMessages.last(), from?.id, to?.id, title)
+                            )
+                        }
                     } catch (e: Exception) {
                         logger.warn("Failed to generate title for session {}: {}", id, e.message)
                     }
                 }
-
-                eventPublisher?.publishEvent(
-                    MessageEvent.persisted(id, persistedMessage, from?.id, to?.id, title)
-                )
-                logger.debug("Message {} persisted to session {}", messageData.messageId, id)
             } catch (e: Exception) {
-                logger.error("Failed to publish persistence event for session {}: {}", id, e.message, e)
+                // Message stays in pending buffer on failure — still visible in reads
+                logger.error("Failed to persist message to session {}: {}", id, e.message, e)
+                eventPublisher?.publishEvent(
+                    MessageEvent.persistenceFailed(
+                        conversationId = id,
+                        content = message.content,
+                        role = message.role,
+                        error = e,
+                        fromUserId = from?.id,
+                        toUserId = to?.id,
+                        title = title
+                    )
+                )
             } finally {
                 sessionEventAwaiter.unregister(id, signal)
             }
@@ -281,6 +313,22 @@ class StoredConversation(
             )
             sessionEventAwaiter.awaitSession(signal)
             repository.addMessage(sessionId, messageData, author, recipient)
+        }
+    }
+
+    companion object {
+        /**
+         * Truncate user message content into a short interim title.
+         */
+        internal fun truncateForTitle(content: String, maxLength: Int): String {
+            val cleaned = content.trim()
+                .replace("\n", " ")
+                .replace(Regex("\\s+"), " ")
+            return if (cleaned.length <= maxLength) {
+                cleaned
+            } else {
+                cleaned.take(maxLength - 3).trimEnd() + "..."
+            }
         }
     }
 }

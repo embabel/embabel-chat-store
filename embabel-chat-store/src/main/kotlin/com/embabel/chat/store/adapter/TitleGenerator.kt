@@ -22,15 +22,16 @@ import com.embabel.chat.Message
  *
  * Implementations can range from simple truncation to LLM-powered summarization.
  */
-fun interface TitleGenerator {
+interface TitleGenerator {
 
     /**
      * Generate a title from the conversation messages.
      *
      * @param messages the messages to generate a title from
+     * @param currentTitle the existing title, if any — implementations may keep it if still relevant
      * @return a short title for the conversation
      */
-    suspend fun generate(messages: List<Message>): String
+    suspend fun generate(messages: List<Message>, currentTitle: String? = null): String
 
     companion object {
         /**
@@ -64,7 +65,7 @@ class TruncatingTitleGenerator(
     private val ellipsis: String = "..."
 ) : TitleGenerator {
 
-    override suspend fun generate(messages: List<Message>): String {
+    override suspend fun generate(messages: List<Message>, currentTitle: String?): String {
         val firstUserMessage = messages.firstOrNull { it.role == com.embabel.chat.MessageRole.USER }
             ?: messages.firstOrNull()
             ?: return TitleGenerator.DEFAULT_FALLBACK
@@ -92,7 +93,7 @@ class FirstSentenceTitleGenerator(
 
     private val sentenceEnders = Regex("[.!?]")
 
-    override suspend fun generate(messages: List<Message>): String {
+    override suspend fun generate(messages: List<Message>, currentTitle: String?): String {
         val firstUserMessage = messages.firstOrNull { it.role == com.embabel.chat.MessageRole.USER }
             ?: messages.firstOrNull()
             ?: return TitleGenerator.DEFAULT_FALLBACK
@@ -133,13 +134,20 @@ class LlmTitleGenerator(
     private val llmCall: suspend (String) -> String
 ) : TitleGenerator {
 
-    override suspend fun generate(messages: List<Message>): String {
+    override suspend fun generate(messages: List<Message>, currentTitle: String?): String {
         return try {
             val transcript = messages.joinToString("\n") { msg ->
                 val content = if (msg.content.length > 200) msg.content.take(200) + "..." else msg.content
                 "${msg.role.name.lowercase()}: $content"
             }
-            val fullPrompt = prompt + transcript
+            val titleContext = if (currentTitle != null) {
+                "The current title is: \"$currentTitle\"\n" +
+                    "If this title still accurately describes the conversation, respond with exactly the same title.\n" +
+                    "Otherwise, generate a better one.\n\n"
+            } else {
+                ""
+            }
+            val fullPrompt = prompt + titleContext + transcript
             llmCall(fullPrompt)
                 .trim()
                 .take(maxLength)
@@ -168,11 +176,11 @@ class FallbackTitleGenerator(
     private val fallback: TitleGenerator
 ) : TitleGenerator {
 
-    override suspend fun generate(messages: List<Message>): String {
+    override suspend fun generate(messages: List<Message>, currentTitle: String?): String {
         return try {
-            primary.generate(messages)
+            primary.generate(messages, currentTitle)
         } catch (e: Exception) {
-            fallback.generate(messages)
+            fallback.generate(messages, currentTitle)
         }
     }
 }
