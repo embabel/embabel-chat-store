@@ -254,7 +254,7 @@ class StoredConversation(
                     && messageCount % titleAfterMessageCount == 0) {
                     try {
                         val allMessages = updatedSession.messages.map { it.toMessage() }
-                        val newTitle = titleGenerator.generate(allMessages, title)
+                        val newTitle = titleGenerator.generate(allMessages, title, user?.id)
                         if (newTitle != title) {
                             title = newTitle
                             repository.updateSessionTitle(id, title!!)

@@ -31,7 +31,7 @@ interface TitleGenerator {
      * @param currentTitle the existing title, if any — implementations may keep it if still relevant
      * @return a short title for the conversation
      */
-    suspend fun generate(messages: List<Message>, currentTitle: String? = null): String
+    suspend fun generate(messages: List<Message>, currentTitle: String? = null, userId: String? = null): String
 
     companion object {
         /**
@@ -65,7 +65,7 @@ class TruncatingTitleGenerator(
     private val ellipsis: String = "..."
 ) : TitleGenerator {
 
-    override suspend fun generate(messages: List<Message>, currentTitle: String?): String {
+    override suspend fun generate(messages: List<Message>, currentTitle: String?, userId: String?): String {
         val firstUserMessage = messages.firstOrNull { it.role == com.embabel.chat.MessageRole.USER }
             ?: messages.firstOrNull()
             ?: return TitleGenerator.DEFAULT_FALLBACK
@@ -93,7 +93,7 @@ class FirstSentenceTitleGenerator(
 
     private val sentenceEnders = Regex("[.!?]")
 
-    override suspend fun generate(messages: List<Message>, currentTitle: String?): String {
+    override suspend fun generate(messages: List<Message>, currentTitle: String?, userId: String?): String {
         val firstUserMessage = messages.firstOrNull { it.role == com.embabel.chat.MessageRole.USER }
             ?: messages.firstOrNull()
             ?: return TitleGenerator.DEFAULT_FALLBACK
@@ -131,10 +131,17 @@ class LlmTitleGenerator(
     private val prompt: String = TitleGenerator.DEFAULT_PROMPT,
     private val maxLength: Int = 100,
     private val fallback: String = TitleGenerator.DEFAULT_FALLBACK,
-    private val llmCall: suspend (String) -> String
+    private val llmCall: suspend (prompt: String, userId: String?) -> String,
 ) : TitleGenerator {
 
-    override suspend fun generate(messages: List<Message>, currentTitle: String?): String {
+    constructor(
+        prompt: String = TitleGenerator.DEFAULT_PROMPT,
+        maxLength: Int = 100,
+        fallback: String = TitleGenerator.DEFAULT_FALLBACK,
+        llmCall: suspend (prompt: String) -> String,
+    ) : this(prompt, maxLength, fallback, { p, _ -> llmCall(p) })
+
+    override suspend fun generate(messages: List<Message>, currentTitle: String?, userId: String?): String {
         return try {
             val transcript = messages.joinToString("\n") { msg ->
                 val content = if (msg.content.length > 200) msg.content.take(200) + "..." else msg.content
@@ -148,7 +155,7 @@ class LlmTitleGenerator(
                 ""
             }
             val fullPrompt = prompt + titleContext + transcript
-            llmCall(fullPrompt)
+            llmCall(fullPrompt, userId)
                 .trim()
                 .take(maxLength)
                 .ifBlank { fallback }
@@ -176,11 +183,11 @@ class FallbackTitleGenerator(
     private val fallback: TitleGenerator
 ) : TitleGenerator {
 
-    override suspend fun generate(messages: List<Message>, currentTitle: String?): String {
+    override suspend fun generate(messages: List<Message>, currentTitle: String?, userId: String?): String {
         return try {
-            primary.generate(messages, currentTitle)
+            primary.generate(messages, currentTitle, userId)
         } catch (e: Exception) {
-            fallback.generate(messages, currentTitle)
+            fallback.generate(messages, currentTitle, userId)
         }
     }
 }
