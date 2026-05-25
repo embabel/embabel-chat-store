@@ -2,6 +2,7 @@ package com.embabel.chat.store.repository
 
 import com.embabel.chat.store.event.SessionCreatedEvent
 import com.embabel.chat.store.model.AttributedMessage
+import com.embabel.chat.store.model.DeletableSession
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.NewMessageInSession
 import com.embabel.chat.store.model.SessionData
@@ -117,7 +118,11 @@ open class ChatSessionRepositoryImpl(
 
     @Transactional
     override fun deleteSession(sessionId: String) {
-        graphObjectManager.delete<StoredSession>(sessionId)
+        // Cascade through DeletableSession so the session and all of its messages
+        // are hard-deleted. The view declares only HAS_MESSAGE, so the cascade
+        // cannot reach the owner or message authors/recipients — DETACH DELETE of
+        // each :StoredMessage drops those edges while leaving every :User intact.
+        graphObjectManager.delete<DeletableSession>(sessionId, CascadeType.DELETE_ALL)
     }
 
     @Transactional

@@ -5,6 +5,8 @@ import com.embabel.chat.store.TestApplication
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.TestSessionUser
 import org.drivine.manager.GraphObjectManager
+import org.drivine.manager.PersistenceManager
+import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -28,6 +30,9 @@ class ChatSessionRepositoryImplTest {
 
     @Autowired
     private lateinit var graphObjectManager: GraphObjectManager
+
+    @Autowired
+    private lateinit var persistenceManager: PersistenceManager
 
     private lateinit var testUser: TestSessionUser
 
@@ -221,6 +226,96 @@ class ChatSessionRepositoryImplTest {
         val found = chatSessionRepository.findBySessionId(sessionId)
         assertFalse(found.isPresent)
     }
+
+    @Test
+    fun `test delete session cascades to its messages but preserves the owner and other sessions`() {
+        // Given: user A owns a session with two messages, built via the real repo API
+        // so the genuine ChatSession/StoredMessage/OWNED_BY/HAS_MESSAGE/AUTHORED_BY graph exists.
+        val userA = testUser // saved in setUp()
+        val sessionAId = UUID.randomUUID().toString()
+        chatSessionRepository.createSession(sessionAId, userA, "Session A")
+        val a1 = MessageData(
+            messageId = UUID.randomUUID().toString(),
+            role = MessageRole.USER,
+            content = "A — first",
+            createdAt = Instant.now()
+        )
+        val a2 = MessageData(
+            messageId = UUID.randomUUID().toString(),
+            role = MessageRole.ASSISTANT,
+            content = "A — second",
+            createdAt = Instant.now()
+        )
+        chatSessionRepository.addMessage(sessionAId, a1, userA)
+        chatSessionRepository.addMessage(sessionAId, a2, null)
+
+        // And: a second user B with their own session and messages, which must be left untouched.
+        val userB = TestSessionUser(
+            id = UUID.randomUUID().toString(),
+            displayName = "User B"
+        )
+        graphObjectManager.save(userB)
+        val sessionBId = UUID.randomUUID().toString()
+        chatSessionRepository.createSession(sessionBId, userB, "Session B")
+        val b1 = MessageData(
+            messageId = UUID.randomUUID().toString(),
+            role = MessageRole.USER,
+            content = "B — first",
+            createdAt = Instant.now()
+        )
+        val b2 = MessageData(
+            messageId = UUID.randomUUID().toString(),
+            role = MessageRole.ASSISTANT,
+            content = "B — second",
+            createdAt = Instant.now()
+        )
+        chatSessionRepository.addMessage(sessionBId, b1, userB)
+        chatSessionRepository.addMessage(sessionBId, b2, null)
+
+        // Sanity: the graph is shaped as expected before we delete.
+        assertEquals(1, countNodes("ChatSession", "sessionId", sessionAId))
+        assertEquals(1, countNodes("StoredMessage", "messageId", a1.messageId))
+        assertEquals(1, countNodes("StoredMessage", "messageId", a2.messageId))
+        assertEquals(1, countNodes("User", "id", userA.id))
+
+        // When
+        chatSessionRepository.deleteSession(sessionAId)
+
+        // Then: session A's :ChatSession node is gone.
+        assertFalse(chatSessionRepository.findBySessionId(sessionAId).isPresent)
+        assertEquals(0, countNodes("ChatSession", "sessionId", sessionAId))
+
+        // And: every one of session A's :StoredMessage nodes is gone (cascade reached them).
+        assertEquals(0, countNodes("StoredMessage", "messageId", a1.messageId))
+        assertEquals(0, countNodes("StoredMessage", "messageId", a2.messageId))
+
+        // And: the owner :User survives — the cascade view declares only HAS_MESSAGE, so it
+        // structurally cannot reach :User; DETACH merely dropped OWNED_BY/AUTHORED_BY edges.
+        assertEquals(1, countNodes("User", "id", userA.id))
+
+        // And: session B and its messages are entirely untouched.
+        val sessionB = chatSessionRepository.findBySessionId(sessionBId)
+        assertTrue(sessionB.isPresent)
+        assertEquals(2, sessionB.get().messages.size)
+        assertEquals(1, countNodes("ChatSession", "sessionId", sessionBId))
+        assertEquals(1, countNodes("StoredMessage", "messageId", b1.messageId))
+        assertEquals(1, countNodes("StoredMessage", "messageId", b2.messageId))
+        assertEquals(1, countNodes("User", "id", userB.id))
+    }
+
+    /**
+     * Counts nodes carrying [label] whose [idProperty] equals [id], via raw Cypher.
+     * Used to assert node-level state after a cascade delete, below the GraphView layer.
+     * The id value is always bound as a parameter; only the controlled label/property
+     * names are interpolated.
+     */
+    private fun countNodes(label: String, idProperty: String, id: String): Int =
+        persistenceManager.getOne(
+            QuerySpecification
+                .withStatement("MATCH (n:$label {$idProperty: \$id}) RETURN count(n) AS count")
+                .bind(mapOf("id" to id))
+                .transform(Int::class.java)
+        )
 
     @Test
     fun `test add message to session with author`() {
