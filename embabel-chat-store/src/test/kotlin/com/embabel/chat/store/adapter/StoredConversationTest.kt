@@ -21,6 +21,8 @@ import com.embabel.chat.AssistantMessage
 import com.embabel.chat.SystemMessage
 import com.embabel.chat.event.MessageEvent
 import com.embabel.chat.event.MessageStatus
+import com.embabel.chat.store.embedding.EmbeddingResult
+import com.embabel.chat.store.embedding.MessageEmbedder
 import com.embabel.chat.store.event.SessionEventAwaiter
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.SessionData
@@ -32,6 +34,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -55,6 +58,7 @@ class StoredConversationTest {
     private lateinit var repository: ChatSessionRepository
     private lateinit var eventPublisher: ApplicationEventPublisher
     private lateinit var sessionEventAwaiter: SessionEventAwaiter
+    private lateinit var messageEmbedder: MessageEmbedder
     private lateinit var scope: CoroutineScope
 
     private val sessionId = "session-1"
@@ -66,18 +70,22 @@ class StoredConversationTest {
         repository = mock()
         eventPublisher = mock()
         sessionEventAwaiter = mock()
+        messageEmbedder = mock()
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
         whenever(sessionEventAwaiter.register(any())).thenReturn(CompletableDeferred())
+        runBlocking { whenever(messageEmbedder.embed(any())).thenReturn(null) }
     }
 
     private fun createConversation(
         title: String? = null,
-        titleGenerator: TitleGenerator? = null
+        titleGenerator: TitleGenerator? = null,
+        embedder: MessageEmbedder = messageEmbedder,
     ) = StoredConversation(
         id = sessionId,
         repository = repository,
         sessionEventAwaiter = sessionEventAwaiter,
+        messageEmbedder = embedder,
         eventPublisher = eventPublisher,
         user = user,
         agent = agent,
@@ -394,6 +402,80 @@ class StoredConversationTest {
     fun `truncateForTitle handles multiline and extra whitespace`() {
         val result = StoredConversation.truncateForTitle("  Hello\n  World  \n\n  Foo  ", 50)
         assertEquals("Hello World Foo", result)
+    }
+
+    // ==================== Embedding tests ====================
+
+    @Test
+    fun `embedder is invoked and embedding is included in persisted MessageData`() {
+        val vector = floatArrayOf(0.1f, 0.2f, 0.3f)
+        runBlocking {
+            whenever(messageEmbedder.embed(any()))
+                .thenReturn(EmbeddingResult(vector, "test-model"))
+        }
+        stubAddMessage()
+
+        val conversation = createConversation()
+        conversation.addMessage(UserMessage(content = "Hello"))
+
+        val captor = argumentCaptor<MessageData>()
+        verify(repository, timeout(5000)).addMessage(eq(sessionId), captor.capture(), any(), any())
+        assertArrayEquals(vector, captor.firstValue.embedding)
+        assertEquals("test-model", captor.firstValue.embeddingModel)
+    }
+
+    @Test
+    fun `null embedding result still persists the message with null embedding`() {
+        runBlocking { whenever(messageEmbedder.embed(any())).thenReturn(null) }
+        stubAddMessage()
+
+        val conversation = createConversation()
+        conversation.addMessage(UserMessage(content = "Hello"))
+
+        val captor = argumentCaptor<MessageData>()
+        verify(repository, timeout(5000)).addMessage(eq(sessionId), captor.capture(), any(), any())
+        assertNull(captor.firstValue.embedding)
+        assertNull(captor.firstValue.embeddingModel)
+    }
+
+    @Test
+    fun `no embedder configured persists message with null embedding`() {
+        stubAddMessage()
+
+        val conversation = StoredConversation(
+            id = sessionId,
+            repository = repository,
+            sessionEventAwaiter = sessionEventAwaiter,
+            messageEmbedder = null,
+            eventPublisher = eventPublisher,
+            user = user,
+            agent = agent,
+            scope = scope,
+        )
+        conversation.addMessage(UserMessage(content = "Hello"))
+
+        val captor = argumentCaptor<MessageData>()
+        verify(repository, timeout(5000)).addMessage(eq(sessionId), captor.capture(), any(), any())
+        assertNull(captor.firstValue.embedding)
+        assertNull(captor.firstValue.embeddingModel)
+    }
+
+    @Test
+    fun `embedder failure does not block persistence`() {
+        runBlocking {
+            whenever(messageEmbedder.embed(any()))
+                .thenThrow(RuntimeException("embedding endpoint unreachable"))
+        }
+        stubAddMessage()
+
+        val conversation = createConversation()
+        conversation.addMessage(UserMessage(content = "Hello"))
+
+        val captor = argumentCaptor<MessageData>()
+        verify(repository, timeout(5000)).addMessage(eq(sessionId), captor.capture(), any(), any())
+        assertEquals("Hello", captor.firstValue.content)
+        assertNull(captor.firstValue.embedding)
+        assertNull(captor.firstValue.embeddingModel)
     }
 }
 

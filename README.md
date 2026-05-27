@@ -1,6 +1,10 @@
 # Embabel Chat Store
 
-Conversation persistence layer for Embabel Agent. Provides pluggable storage backends for chat sessions - in-memory for development/testing, Neo4j for production.
+Conversation persistence layer for Embabel Agent. Provides pluggable storage backends
+for chat sessions — in-memory for development/testing, and a graph-database backing for
+production. Backed by Drivine and supports **Neo4j 5.x**, **Memgraph 2.x**, and
+**FalkorDB 4.x** out of the box; the matching dialect is detected automatically from
+Drivine's connection type.
 
 ## Quick Start
 
@@ -26,8 +30,11 @@ conversation.addMessage(AssistantMessage("Hi!"))    // from=agent, to=user
 
 ```
 ConversationFactoryProvider
-    ├── InMemoryConversationFactory  → InMemoryConversation (ephemeral)
-    └── StoredConversationFactory    → StoredConversation (Neo4j)
+    ├── InMemoryConversationFactory  → InMemoryConversation  (ephemeral)
+    └── StoredConversationFactory    → StoredConversation    (graph DB)
+                                         │
+                                         ├── MessageEmbedder?      (optional: vector per message)
+                                         └── VectorIndexManager    (per-DB index DDL)
 ```
 
 ### Storage Types
@@ -148,10 +155,121 @@ val factory = StoredConversationFactory(
 )
 ```
 
+## Vector Embeddings on Messages
+
+When a `MessageEmbedder` is wired, every persisted message is embedded inline within
+the existing async-persistence coroutine — the embedding lands with the message in a
+single DB write, no extra round-trip per message.
+
+```
+addMessage()
+  ├─ MessageEvent(ADDED)              ← synchronous (front-ends update here)
+  └─ async {
+       embedder.embed(message)        ← inline, before the DB write
+       repository.addMessage(... embedding ...)
+       MessageEvent(PERSISTED)
+     }
+```
+
+The embedding is stored as two properties on the `:StoredMessage` node:
+
+```cypher
+(msg:StoredMessage {
+  messageId, role, content, createdAt,
+  embedding,                          // List<Float> — works on Neo4j/Memgraph/FalkorDB
+  embeddingModel                      // EmbeddingService.name, for drift detection
+})
+```
+
+`embedding` and `embeddingModel` are both nullable. Messages without an embedding
+(failure, no embedder configured, SYSTEM/blank content) just have null values.
+
+### Embedder Configuration
+
+The auto-configuration wires a default embedder when an embabel `Ai` bean is available:
+
+```kotlin
+RoleFilteringMessageEmbedder(           // Skips SYSTEM and blank-content messages
+    DefaultMessageEmbedder(             // Calls ai.withDefaultEmbeddingService()
+        ai.withDefaultEmbeddingService()
+    )
+)
+```
+
+To override — embed all roles, use a different embedding service, etc. — define your
+own `MessageEmbedder` bean and the autoconfig backs off.
+
+### Failure Mode
+
+Embedding failures are caught and logged; the message is persisted with a null
+embedding. Messages are never lost because an embedding call failed.
+
+## Vector Index Management
+
+The chat-store creates and manages a vector index on `:StoredMessage(embedding)`
+automatically at application startup. The dialect (Neo4j / Memgraph / FalkorDB) is
+detected from Drivine's `PersistenceManager.type`.
+
+```yaml
+embabel:
+  chat:
+    store:
+      vector-index:
+        enabled: true                   # default
+        label: StoredMessage            # default
+        property: embedding             # default
+        similarity-function: cosine     # cosine | euclidean
+        name: null                      # default: ${label}_${property}_vector
+```
+
+On startup the autoconfig calls `VectorIndexManager.ensureIndex(...)` with the
+dimensions taken from the configured `EmbeddingService.dimensions`. The call is
+idempotent — three outcomes:
+
+| Outcome | Meaning |
+|---|---|
+| `Created` | No prior index existed; one was created. Logged at INFO. |
+| `AlreadyMatching` | An index with the requested shape was already present. Logged at DEBUG. |
+| `Drift` | An index exists with a **different** shape (e.g. different dimensions). **Not auto-dropped.** Logged at WARN. |
+
+### Handling Drift
+
+When you change the embedding model — say from `text-embedding-3-small` (1536 dims) to
+`text-embedding-3-large` (3072 dims) — `ensureIndex` will detect that the existing
+index no longer matches and emit a warning. To resolve:
+
+```kotlin
+@Autowired lateinit var indexManager: VectorIndexManager
+
+// Destructive — drops the old index, creates one for the new model.
+// Existing :StoredMessage.embedding values are now stale and must be re-embedded.
+indexManager.recreateIndex(
+    VectorIndexConfig(
+        label = "StoredMessage",
+        property = "embedding",
+        dimensions = newDimensions,
+    )
+)
+```
+
+Re-embedding existing messages is the caller's responsibility — the manager only
+handles the index itself.
+
+### Supported Databases
+
+| Database | Index DDL | Has index name? | `IF NOT EXISTS` |
+|---|---|---|---|
+| Neo4j 5.13+ | `CREATE VECTOR INDEX … OPTIONS { indexConfig: { … } }` | Yes | Yes |
+| Memgraph 2.x | `CREATE VECTOR INDEX … WITH CONFIG { dimension, metric, capacity }` | Yes | No — guarded via `vector_search.show_index_info()` |
+| FalkorDB 4.x | `CREATE VECTOR INDEX FOR (n:L) ON (n.p) OPTIONS { … }` | No (label+property identifies) | No — guarded via `db.indexes()` |
+
+Override the auto-selected manager by defining your own `VectorIndexManager` bean.
+
 ## User Implementation
 
 Implement `StoredUser` for your user type. The `StoredUser` interface extends `User` from
-`embabel-agent-api` with Drivine annotations for Neo4j persistence:
+`embabel-agent-api` with Drivine annotations for graph-database persistence (the same
+annotations work for Neo4j, Memgraph, and FalkorDB):
 
 ```kotlin
 @NodeFragment(labels = ["User", "MyUser"])
@@ -192,13 +310,26 @@ Add the dependency and configure:
 embabel:
   chat:
     store:
-      enabled: true  # default
+      enabled: true                  # default
+      title-after-message-count: 1   # default: regenerate title every N messages
+      vector-index:
+        enabled: true                # default: ensure a vector index at startup
+        similarity-function: cosine  # default
 ```
 
 Beans auto-configured:
-- `storedConversationFactory` - for persistent conversations
-- `inMemoryConversationFactory` - for ephemeral conversations
-- `conversationFactoryProvider` - aggregates all factories
+
+| Bean | Conditional on | Purpose |
+|---|---|---|
+| `storedConversationFactory` | `ChatSessionRepository` | Creates persistent conversations |
+| `inMemoryConversationFactory` | — | Creates ephemeral conversations |
+| `conversationFactoryProvider` | — | Aggregates all factories |
+| `titleGenerator` | `Ai` bean | LLM-driven title generation |
+| `messageEmbedder` | `Ai` bean | Inline embedding on persisted messages |
+| `vectorIndexManager` | `PersistenceManager` | Per-DB vector-index DDL (auto-selected from `DatabaseType`) |
+| `vectorIndexEnsurer` | `VectorIndexManager` + `Ai` + property | Runs `ensureIndex` on app startup |
+
+Each of these can be overridden by defining your own bean of the same type.
 
 ## Dependencies
 

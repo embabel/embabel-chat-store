@@ -36,4 +36,32 @@ class ChatStoreProperties {
      * Default: 1
      */
     var titleAfterMessageCount: Int = 1
+
+    /**
+     * Vector index configuration for chat-message embeddings. The graph-database
+     * flavour is detected automatically from Drivine's connection type; no override
+     * is needed for the standard Neo4j / Memgraph / FalkorDB configurations.
+     */
+    var vectorIndex: VectorIndex = VectorIndex()
+
+    class VectorIndex {
+        /**
+         * Whether to ensure a vector index exists at application startup.
+         * No-op when no [com.embabel.chat.store.embedding.MessageEmbedder] is wired.
+         * Default: true
+         */
+        var enabled: Boolean = true
+
+        /** Node label the index covers. Default: `StoredMessage` */
+        var label: String = "StoredMessage"
+
+        /** Node property holding the vector. Default: `embedding` */
+        var property: String = "embedding"
+
+        /** Similarity function. Accepted: `cosine`, `euclidean`. Default: `cosine` */
+        var similarityFunction: String = "cosine"
+
+        /** Optional explicit index name. When null, the manager derives `${label}_${property}_vector`. */
+        var name: String? = null
+    }
 }

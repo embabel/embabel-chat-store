@@ -22,11 +22,24 @@ import com.embabel.chat.MapConversationFactoryProvider
 import com.embabel.chat.store.adapter.LlmTitleGenerator
 import com.embabel.chat.store.adapter.StoredConversationFactory
 import com.embabel.chat.store.adapter.TitleGenerator
+import com.embabel.chat.store.embedding.DefaultMessageEmbedder
+import com.embabel.chat.store.embedding.MessageEmbedder
+import com.embabel.chat.store.embedding.RoleFilteringMessageEmbedder
+import com.embabel.chat.store.embedding.index.FalkorDbVectorIndexManager
+import com.embabel.chat.store.embedding.index.MemgraphVectorIndexManager
+import com.embabel.chat.store.embedding.index.Neo4jVectorIndexManager
+import com.embabel.chat.store.embedding.index.SimilarityFunction
+import com.embabel.chat.store.embedding.index.VectorIndexConfig
+import com.embabel.chat.store.embedding.index.VectorIndexManager
 import com.embabel.chat.store.event.SessionEventAwaiter
 import com.embabel.chat.store.repository.ChatSessionRepository
 import com.embabel.chat.support.InMemoryConversationFactory
+import com.embabel.common.ai.model.EmbeddingService
+import org.drivine.connection.DatabaseType
+import org.drivine.manager.PersistenceManager
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.boot.ApplicationRunner
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass
@@ -85,6 +98,84 @@ open class ChatStoreAutoConfiguration {
     }
 
     /**
+     * Creates a [MessageEmbedder] that uses [Ai] to compute a vector for each
+     * persisted message, wrapped in a [RoleFilteringMessageEmbedder] so SYSTEM
+     * messages and blank-content messages are skipped.
+     *
+     * Only created if:
+     * - No existing [MessageEmbedder] bean
+     * - An [Ai] bean is available (from embabel-agent)
+     *
+     * Apps can override by defining their own [MessageEmbedder] bean (for example,
+     * to embed all roles, or to use a different embedding service per session).
+     */
+    @Bean
+    @ConditionalOnMissingBean(MessageEmbedder::class)
+    @ConditionalOnBean(Ai::class)
+    open fun messageEmbedder(ai: Ai): MessageEmbedder = RoleFilteringMessageEmbedder(
+        delegate = DefaultMessageEmbedder(ai.withDefaultEmbeddingService())
+    )
+
+    /**
+     * Selects the [VectorIndexManager] implementation that matches the graph database
+     * currently in use, based on Drivine's [PersistenceManager.type].
+     *
+     * Only created when a [PersistenceManager] is available. Apps can override by
+     * defining their own [VectorIndexManager] bean.
+     */
+    @Bean
+    @ConditionalOnMissingBean(VectorIndexManager::class)
+    @ConditionalOnBean(PersistenceManager::class)
+    open fun vectorIndexManager(persistenceManager: PersistenceManager): VectorIndexManager =
+        when (persistenceManager.type) {
+            DatabaseType.NEO4J -> Neo4jVectorIndexManager(persistenceManager)
+            DatabaseType.MEMGRAPH -> MemgraphVectorIndexManager(persistenceManager)
+            DatabaseType.FALKORDB -> FalkorDbVectorIndexManager(persistenceManager)
+            else -> throw IllegalStateException(
+                "No VectorIndexManager for Drivine DatabaseType ${persistenceManager.type}. " +
+                    "Supported: NEO4J, MEMGRAPH, FALKORDB. Define your own VectorIndexManager " +
+                    "bean to override."
+            )
+        }
+
+    /**
+     * Runs once at application startup: ensures the chat-message vector index exists,
+     * sized to the configured embedding model's dimensions. Skipped when either the
+     * vector index is disabled in config, no [Ai] bean is available, or no
+     * [VectorIndexManager] is available.
+     *
+     * If an index already exists with a different shape (drift), the manager logs a
+     * warning and does **not** auto-drop. Operators must call [VectorIndexManager.recreateIndex]
+     * explicitly and re-embed existing messages — see the type's KDoc.
+     */
+    @Bean
+    @ConditionalOnBean(value = [VectorIndexManager::class, Ai::class])
+    @ConditionalOnProperty(
+        prefix = "embabel.chat.store.vector-index",
+        name = ["enabled"],
+        havingValue = "true",
+        matchIfMissing = true,
+    )
+    open fun vectorIndexEnsurer(
+        vectorIndexManager: VectorIndexManager,
+        ai: Ai,
+        properties: ChatStoreProperties,
+    ): ApplicationRunner = ApplicationRunner {
+        val embeddingService = ai.withDefaultEmbeddingService()
+        val config = VectorIndexConfig(
+            label = properties.vectorIndex.label,
+            property = properties.vectorIndex.property,
+            dimensions = embeddingService.dimensions,
+            similarityFunction = SimilarityFunction.valueOf(
+                properties.vectorIndex.similarityFunction.uppercase()
+            ),
+            name = properties.vectorIndex.name,
+        )
+        logger.info("Ensuring vector index: {}", config)
+        vectorIndexManager.ensureIndex(config)
+    }
+
+    /**
      * Creates a [StoredConversationFactory] for persistent conversations.
      *
      * Only created if:
@@ -108,11 +199,13 @@ open class ChatStoreAutoConfiguration {
         sessionEventAwaiter: SessionEventAwaiter,
         properties: ChatStoreProperties,
         @Autowired(required = false) titleGenerator: TitleGenerator?,
+        @Autowired(required = false) messageEmbedder: MessageEmbedder?,
         @Autowired(required = false) eventPublisher: ApplicationEventPublisher?
     ): ConversationFactory {
         logger.info(
-            "Creating StoredConversationFactory (titleGenerator={}, titleAfterMessageCount={}, eventPublisher={})",
+            "Creating StoredConversationFactory (titleGenerator={}, messageEmbedder={}, titleAfterMessageCount={}, eventPublisher={})",
             titleGenerator?.javaClass?.simpleName ?: "none",
+            messageEmbedder?.javaClass?.simpleName ?: "none",
             properties.titleAfterMessageCount,
             if (eventPublisher != null) "present" else "none"
         )
@@ -122,6 +215,7 @@ open class ChatStoreAutoConfiguration {
             sessionEventAwaiter = sessionEventAwaiter,
             eventPublisher = eventPublisher,
             titleGenerator = titleGenerator,
+            messageEmbedder = messageEmbedder,
             titleAfterMessageCount = properties.titleAfterMessageCount
         )
     }

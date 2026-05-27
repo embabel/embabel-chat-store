@@ -19,6 +19,7 @@ import com.embabel.agent.api.identity.User
 import com.embabel.chat.Conversation
 import com.embabel.chat.ConversationFactory
 import com.embabel.chat.ConversationStoreType
+import com.embabel.chat.store.embedding.MessageEmbedder
 import com.embabel.chat.store.model.StoredUser
 import com.embabel.chat.store.event.SessionEventAwaiter
 import com.embabel.chat.store.repository.ChatSessionRepository
@@ -63,6 +64,8 @@ import org.springframework.context.ApplicationEventPublisher
  * @param sessionEventAwaiter awaiter for handling session creation race conditions
  * @param eventPublisher optional event publisher for message lifecycle events
  * @param titleGenerator optional generator for auto-generating session titles
+ * @param messageEmbedder optional embedder invoked inline for every persisted message;
+ *   when null, messages persist without embeddings
  * @param scope coroutine scope for async operations
  */
 class StoredConversationFactory @JvmOverloads constructor(
@@ -71,6 +74,7 @@ class StoredConversationFactory @JvmOverloads constructor(
     private val eventPublisher: ApplicationEventPublisher? = null,
     private val titleGenerator: TitleGenerator? = null,
     private val titleAfterMessageCount: Int = 1,
+    private val messageEmbedder: MessageEmbedder? = null,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 ) : ConversationFactory {
 
@@ -101,6 +105,7 @@ class StoredConversationFactory @JvmOverloads constructor(
                 id = id,
                 repository = repository,
                 sessionEventAwaiter = sessionEventAwaiter,
+                messageEmbedder = messageEmbedder,
                 eventPublisher = eventPublisher,
                 user = session.owner,
                 agent = null,
@@ -151,6 +156,7 @@ class StoredConversationFactory @JvmOverloads constructor(
             id = id,
             repository = repository,
             sessionEventAwaiter = sessionEventAwaiter,
+            messageEmbedder = messageEmbedder,
             eventPublisher = eventPublisher,
             user = user,
             agent = agent,

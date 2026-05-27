@@ -21,6 +21,7 @@ import com.embabel.chat.Conversation
 import com.embabel.chat.Message
 import com.embabel.chat.MessageRole
 import com.embabel.chat.event.MessageEvent
+import com.embabel.chat.store.embedding.MessageEmbedder
 import com.embabel.chat.store.event.SessionEventAwaiter
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.StoredSession
@@ -72,6 +73,12 @@ import java.util.concurrent.ConcurrentLinkedQueue
  * @param sessionEventAwaiter awaiter for handling session creation race conditions.
  *   Message persistence will wait for the session to be created rather than
  *   failing immediately if the session doesn't exist yet.
+ * @param messageEmbedder optional embedder invoked inline within the async persistence
+ *   coroutine. When configured, the embedding is computed before the single DB write so
+ *   the message lands with its vector in one round-trip. Embedding failures are caught
+ *   and the message is persisted with a null embedding — messages are never lost. When
+ *   null, messages persist without any embedding (same behaviour as before vector
+ *   embedding was introduced).
  * @param scope coroutine scope for async operations (defaults to IO dispatcher with SupervisorJob)
  */
 class StoredConversation(
@@ -85,6 +92,7 @@ class StoredConversation(
     private val titleGenerator: TitleGenerator? = null,
     private val titleAfterMessageCount: Int = 1,
     private val interimTitleMaxLength: Int = TitleGenerator.DEFAULT_MAX_LENGTH,
+    private val messageEmbedder: MessageEmbedder? = null,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
     override val assetTracker: AssetTracker = InMemoryAssetTracker()
 ) : Conversation {
@@ -232,7 +240,8 @@ class StoredConversation(
         // consistent reads while the write is in flight.
         scope.launch {
             try {
-                val updatedSession = addMessageWithAwait(id, messageData, from, to, signal)
+                val messageDataForDb = embedMessageData(message, messageData)
+                val updatedSession = addMessageWithAwait(id, messageDataForDb, from, to, signal)
 
                 // Persisted — remove from pending buffer (DB is now the source of truth)
                 pendingMessages.remove(messageData)
@@ -287,6 +296,25 @@ class StoredConversation(
         }
 
         return message
+    }
+
+    /**
+     * Return [messageData] with the embedding fields populated, or the original
+     * unchanged if the embedder declined or failed. Embedding failure is never
+     * fatal: the message is always persisted, with a null embedding if needed.
+     */
+    private suspend fun embedMessageData(message: Message, messageData: MessageData): MessageData {
+        val embedder = messageEmbedder ?: return messageData
+        return try {
+            val result = embedder.embed(message) ?: return messageData
+            messageData.copy(embedding = result.vector, embeddingModel = result.model)
+        } catch (e: Exception) {
+            logger.warn(
+                "Embedding failed for message {} in session {}: {}",
+                messageData.messageId, id, e.message, e
+            )
+            messageData
+        }
     }
 
     /**
