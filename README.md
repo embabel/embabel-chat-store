@@ -265,6 +265,17 @@ handles the index itself.
 
 Override the auto-selected manager by defining your own `VectorIndexManager` bean.
 
+### Test Coverage of the Index Managers
+
+| Database | Test coverage |
+|---|---|
+| Neo4j | Real Drivine testcontainer integration tests cover create / dedupe / drift detect / recreate / drop / named index / euclidean similarity. |
+| Memgraph | Cypher-capture unit tests only — they verify the emitted `WITH CONFIG`, metric mapping, and introspection-row parsing, but do not run against a real Memgraph. |
+| FalkorDB | Cypher-capture unit tests only — they verify the emitted `OPTIONS`, the bare-identifier keys, and `db.indexes()` row parsing, but do not run against a real FalkorDB. **The exact shape of the `options` map returned by `db.indexes()` for vector indexes is not fully documented upstream**; verify against a live FalkorDB the first time drift detection is exercised on it. The failure mode is fail-closed (`findIndex` returns null), which on `ensureIndex` produces an explicit FalkorDB-side error on the duplicate CREATE rather than a silent mismatch. |
+
+Adding real-backend integration tests for Memgraph and FalkorDB is tracked as
+a follow-up — `drivine4j` has examples for both.
+
 ## User Implementation
 
 Implement `StoredUser` for your user type. The `StoredUser` interface extends `User` from
