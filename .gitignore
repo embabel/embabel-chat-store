@@ -30,6 +30,9 @@
 # Runtime artifacts
 *.pid
 
+# Jackknife
+.jackknife/
+
 # Code generation (Gradle)
 **/codegen-gradle/.gradle/
 **/codegen-gradle/build/
