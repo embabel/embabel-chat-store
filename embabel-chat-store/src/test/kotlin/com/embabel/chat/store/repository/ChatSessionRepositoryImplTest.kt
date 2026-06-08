@@ -199,6 +199,95 @@ class ChatSessionRepositoryImplTest {
     }
 
     @Test
+    fun `test count sessions for user`() {
+        // Given
+        val before = chatSessionRepository.countSessionsForUser(testUser.id)
+        chatSessionRepository.createSession(UUID.randomUUID().toString(), testUser, "S1")
+        chatSessionRepository.createSession(UUID.randomUUID().toString(), testUser, "S2")
+
+        // When
+        val after = chatSessionRepository.countSessionsForUser(testUser.id)
+
+        // Then
+        assertEquals(before + 2, after)
+    }
+
+    @Test
+    fun `test session summaries report message counts without loading messages`() {
+        // Given a session with two messages
+        val sessionId = UUID.randomUUID().toString()
+        chatSessionRepository.createSession(sessionId, testUser, "Summary Session")
+        chatSessionRepository.addMessage(
+            sessionId,
+            MessageData(UUID.randomUUID().toString(), MessageRole.USER, "one", Instant.now()),
+            testUser
+        )
+        chatSessionRepository.addMessage(
+            sessionId,
+            MessageData(UUID.randomUUID().toString(), MessageRole.ASSISTANT, "two", Instant.now()),
+            null
+        )
+
+        // When
+        val summary = chatSessionRepository.listSessionSummariesForUser(testUser.id)
+            .firstOrNull { it.session.sessionId == sessionId }
+
+        // Then: the count is folded into the query result
+        assertNotNull(summary)
+        assertEquals(testUser.id, summary!!.owner.id)
+        assertEquals(2L, summary.messageCount)
+    }
+
+    @Test
+    fun `test session summary reports zero for a session with no messages`() {
+        // Given
+        val sessionId = UUID.randomUUID().toString()
+        chatSessionRepository.createSession(sessionId, testUser, "Empty Session")
+
+        // When
+        val summary = chatSessionRepository.listSessionSummariesForUser(testUser.id)
+            .first { it.session.sessionId == sessionId }
+
+        // Then
+        assertEquals(0L, summary.messageCount)
+    }
+
+    @Test
+    fun `test get participants returns distinct authors skipping message nodes`() {
+        // Given: testUser authors two messages; an assistant message has no author
+        val sessionId = UUID.randomUUID().toString()
+        chatSessionRepository.createSession(sessionId, testUser, "Participants")
+        chatSessionRepository.addMessage(
+            sessionId,
+            MessageData(UUID.randomUUID().toString(), MessageRole.USER, "hi", Instant.now()),
+            testUser
+        )
+        chatSessionRepository.addMessage(
+            sessionId,
+            MessageData(UUID.randomUUID().toString(), MessageRole.USER, "again", Instant.now()),
+            testUser
+        )
+        chatSessionRepository.addMessage(
+            sessionId,
+            MessageData(UUID.randomUUID().toString(), MessageRole.ASSISTANT, "hello", Instant.now()),
+            null
+        )
+
+        // When
+        val participants = chatSessionRepository.getParticipants(sessionId)
+
+        // Then: testUser appears once despite authoring two messages; the un-authored
+        // assistant message contributes no participant.
+        assertEquals(1, participants.size)
+        assertEquals(testUser.id, participants[0].id)
+    }
+
+    @Test
+    fun `test get participants returns empty for nonexistent session`() {
+        assertTrue(chatSessionRepository.getParticipants("nonexistent-session").isEmpty())
+    }
+
+    @Test
     fun `test update session title`() {
         // Given
         val sessionId = UUID.randomUUID().toString()

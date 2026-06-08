@@ -1,6 +1,7 @@
 package com.embabel.chat.store.repository
 
 import com.embabel.chat.store.model.MessageData
+import com.embabel.chat.store.model.SessionSummary
 import com.embabel.chat.store.model.SimpleStoredMessage
 import com.embabel.chat.store.model.StoredSession
 import com.embabel.chat.store.model.StoredUser
@@ -67,6 +68,24 @@ interface ChatSessionRepository {
     fun listSessionsForUser(userId: String): List<StoredSession>
 
     /**
+     * List a user's sessions as lightweight summaries — owner plus a message count
+     * computed in the query, without loading the messages. Suited to session-list
+     * UIs that show a "N messages" badge but not the conversation bodies.
+     *
+     * @param userId the owner's user ID
+     * @return one [SessionSummary] per owned session
+     */
+    fun listSessionSummariesForUser(userId: String): List<SessionSummary>
+
+    /**
+     * Count the sessions owned by a user, without loading them.
+     *
+     * @param userId the owner's user ID
+     * @return the number of sessions owned by the user
+     */
+    fun countSessionsForUser(userId: String): Long
+
+    /**
      * Update the title of a session.
      *
      * @param sessionId the session ID
@@ -106,6 +125,16 @@ interface ChatSessionRepository {
      * @return list of messages in chronological order
      */
     fun getMessages(sessionId: String): List<SimpleStoredMessage>
+
+    /**
+     * Get the distinct users who authored a message in a session, skipping the
+     * message nodes in between. Returns an empty list if the session does not exist
+     * or has no attributed messages.
+     *
+     * @param sessionId the session ID
+     * @return the distinct message authors
+     */
+    fun getParticipants(sessionId: String): List<StoredUser>
 
     // ==================== Message Updates ====================
 

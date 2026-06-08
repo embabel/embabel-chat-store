@@ -6,9 +6,12 @@ import com.embabel.chat.store.model.DeletableSession
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.NewMessageInSession
 import com.embabel.chat.store.model.SessionData
+import com.embabel.chat.store.model.SessionParticipants
 import com.embabel.chat.store.model.SessionRef
+import com.embabel.chat.store.model.SessionSummary
 import com.embabel.chat.store.model.SimpleStoredMessage
 import com.embabel.chat.store.model.StoredSession
+import com.embabel.chat.store.model.StoredSessionQueryDsl
 import com.embabel.chat.MessageRole
 import com.embabel.chat.store.model.StoredUser
 import com.embabel.chat.store.model.UserRef
@@ -105,6 +108,26 @@ open class ChatSessionRepositoryImpl(
         }
     }
 
+    @Transactional(readOnly = true)
+    override fun listSessionSummariesForUser(userId: String): List<SessionSummary> {
+        // SessionSummary folds the message count into the query (via @Count), so this
+        // returns one flat row per session — no message bodies cross the wire.
+        return graphObjectManager.loadAll<SessionSummary> {
+            where {
+                owner.id eq userId
+            }
+        }
+    }
+
+    @Transactional(readOnly = true)
+    override fun countSessionsForUser(userId: String): Long {
+        return graphObjectManager.count(StoredSession::class.java, StoredSessionQueryDsl.INSTANCE) {
+            where {
+                owner.id eq userId
+            }
+        }
+    }
+
     @Transactional
     override fun updateSessionTitle(sessionId: String, title: String) {
         val session = findBySessionId(sessionId).orElseThrow {
@@ -158,6 +181,13 @@ open class ChatSessionRepositoryImpl(
     override fun getMessages(sessionId: String): List<SimpleStoredMessage> {
         // Messages are returned in chronological order via @SortedBy on StoredSession.messages
         return findBySessionId(sessionId).orElse(null)?.messages ?: emptyList()
+    }
+
+    @Transactional(readOnly = true)
+    override fun getParticipants(sessionId: String): List<StoredUser> {
+        // SessionParticipants uses @GraphPath (HAS_MESSAGE -> AUTHORED_BY) to map the
+        // distinct authors directly, without materialising the message nodes.
+        return graphObjectManager.load<SessionParticipants>(sessionId)?.participants ?: emptyList()
     }
 
     @Transactional

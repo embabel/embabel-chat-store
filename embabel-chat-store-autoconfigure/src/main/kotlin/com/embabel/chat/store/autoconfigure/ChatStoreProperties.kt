@@ -46,9 +46,10 @@ class ChatStoreProperties {
 
     class VectorIndex {
         /**
-         * Whether to ensure a vector index exists at application startup.
-         * No-op when no [com.embabel.chat.store.embedding.MessageEmbedder] is wired.
-         * Default: true
+         * Whether to register the chat-message vector index in the Drivine schema
+         * catalog. When true (and an embedding model is available) the index is ensured
+         * on startup by Drivine's `SchemaManager`, subject to the global
+         * `drivine.schema.enabled` switch. Default: true
          */
         var enabled: Boolean = true
 
@@ -61,7 +62,7 @@ class ChatStoreProperties {
         /** Similarity function. Accepted: `cosine`, `euclidean`. Default: `cosine` */
         var similarityFunction: String = "cosine"
 
-        /** Optional explicit index name. When null, the manager derives `${label}_${property}_vector`. */
+        /** Optional explicit index name. When null, Drivine derives one from the label and property. */
         var name: String? = null
     }
 }

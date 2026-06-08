@@ -18,7 +18,7 @@ plugins {
 group = "com.embabel.chat.store"
 version = "0.2.0-SNAPSHOT"
 
-val drivineVersion = "0.0.28"
+val drivineVersion = "0.0.45"
 
 repositories {
     mavenCentral()
