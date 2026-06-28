@@ -26,6 +26,7 @@
 *.bak
 *.swp
 *~
+*.versionsBackup
 
 # Runtime artifacts
 *.pid
