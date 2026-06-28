@@ -11,7 +11,7 @@
 
     <groupId>com.embabel.agent</groupId>
     <artifactId>embabel-chat-store-parent</artifactId>
-    <version>0.2.2</version>
+    <version>0.2.2-SNAPSHOT</version>
     <packaging>pom</packaging>
     <name>Embabel Chat Store Parent</name>
     <description>Parent POM for Embabel Chat Store modules</description>
