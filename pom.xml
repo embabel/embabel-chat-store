@@ -12,7 +12,7 @@
 
     <groupId>com.embabel.agent</groupId>
     <artifactId>embabel-chat-store-parent</artifactId>
-    <version>0.2.1-SNAPSHOT</version>
+    <version>0.3.0-SNAPSHOT</version>
     <packaging>pom</packaging>
     <name>Embabel Chat Store Parent</name>
     <description>Parent POM for Embabel Chat Store modules</description>
@@ -28,7 +28,7 @@
         <drivine.version>0.0.45</drivine.version>
         <kotlin.version>2.2.0</kotlin.version>
         <embabel-common.version>0.1.10-SNAPSHOT</embabel-common.version>
-        <embabel-agent.version>0.4.0-SNAPSHOT</embabel-agent.version>
+        <embabel-agent.version>1.0.0-RC1-SNAPSHOT</embabel-agent.version>
     </properties>
 
     <dependencyManagement>
