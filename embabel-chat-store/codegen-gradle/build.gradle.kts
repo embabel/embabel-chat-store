@@ -11,18 +11,27 @@
 // To run code generation: ./gradlew kspKotlin
 
 plugins {
-    kotlin("jvm") version "2.2.0"
-    id("com.google.devtools.ksp") version "2.2.20-2.0.4"
+    kotlin("jvm") version "2.3.21"
+    id("com.google.devtools.ksp") version "2.3.10"
 }
 
 group = "com.embabel.chat.store"
-version = "0.2.0-SNAPSHOT"
+version = "0.5.0-SNAPSHOT"
 
-val drivineVersion = "0.0.45"
+// Versions come from the Maven build via -P properties (see the exec-maven-plugin in the pom), so the
+// pom is the single source of truth and the KSP DSL is generated against the *same* versions it is
+// later compiled against. Previously drivineVersion was hardcoded here, so bumping the pom silently
+// generated the DSL against a different Drivine than the one it compiled against. The fallbacks keep a
+// standalone `./gradlew kspKotlin` working.
+val drivineVersion = (findProperty("drivineVersion") as String?) ?: "0.0.73"
+val embabelAgentVersion = (findProperty("embabelAgentVersion") as String?) ?: "1.5.0-SNAPSHOT"
+val embabelCommonVersion = (findProperty("embabelCommonVersion") as String?) ?: "2.0.0-SNAPSHOT"
 
 repositories {
-    mavenCentral()
+    // mavenLocal first is deliberate — it mirrors Maven's local-m2-first resolution, so this codegen
+    // and the main Maven compile resolve the *same* drivine / embabel artifacts.
     mavenLocal()
+    mavenCentral()
     maven {
         url = uri("https://repo.embabel.com/artifactory/libs-snapshot")
     }
@@ -39,9 +48,9 @@ dependencies {
     ksp("org.drivine:drivine4j-codegen:$drivineVersion")
 
     // Dependencies needed for domain classes to compile
-    implementation(platform("org.springframework.boot:spring-boot-dependencies:3.5.7"))
-    implementation("com.embabel.agent:embabel-agent-api:0.3.4-SNAPSHOT")
-    implementation("com.embabel.common:embabel-common-core:0.1.10-SNAPSHOT")
+    implementation(platform("org.springframework.boot:spring-boot-dependencies:4.1.0"))
+    implementation("com.embabel.agent:embabel-agent-api:$embabelAgentVersion")
+    implementation("com.embabel.common:embabel-common-core:$embabelCommonVersion")
     implementation("com.fasterxml.uuid:java-uuid-generator:5.2.0")
     implementation("org.springframework:spring-context")
     implementation("org.springframework:spring-tx")
@@ -50,8 +59,9 @@ dependencies {
 
 kotlin {
     compilerOptions {
-        // Required for Drivine DSL with context parameters
-        freeCompilerArgs.addAll("-Xcontext-parameters")
+        // -Xcontext-parameters: required for the Drivine DSL, which uses context parameters.
+        // -Xskip-metadata-version-check: consume embabel libs built with an older Kotlin metadata.
+        freeCompilerArgs.addAll("-Xcontext-parameters", "-Xskip-metadata-version-check")
     }
 
     // Configure source sets to read from parent project
