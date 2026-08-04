@@ -24,6 +24,7 @@ import com.embabel.chat.store.model.SessionData
 import com.embabel.chat.store.model.SessionParticipants
 import com.embabel.chat.store.model.SessionRef
 import com.embabel.chat.store.model.SessionSummary
+import com.embabel.chat.store.model.SessionSummaryQueryDsl
 import com.embabel.chat.store.model.SimpleStoredMessage
 import com.embabel.chat.store.model.StoredSession
 import com.embabel.chat.store.model.StoredSessionQueryDsl
@@ -35,11 +36,14 @@ import com.embabel.chat.store.model.loadAll
 import com.embabel.chat.store.model.owner
 import org.drivine.manager.CascadeType
 import org.drivine.manager.GraphObjectManager
+import org.drivine.manager.PersistenceManager
 import org.drivine.manager.delete
 import org.drivine.manager.load
+import org.drivine.query.QuerySpecification
 import org.slf4j.LoggerFactory
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.transaction.annotation.Transactional
+import java.time.Clock
 import java.time.Instant
 import java.util.Optional
 
@@ -51,7 +55,9 @@ import java.util.Optional
  */
 open class ChatSessionRepositoryImpl(
     private val graphObjectManager: GraphObjectManager,
-    private val eventPublisher: ApplicationEventPublisher? = null
+    private val persistenceManager: PersistenceManager,
+    private val eventPublisher: ApplicationEventPublisher? = null,
+    private val clock: Clock = Clock.systemUTC(),
 ) : ChatSessionRepository {
 
     private val logger = LoggerFactory.getLogger(ChatSessionRepositoryImpl::class.java)
@@ -60,11 +66,13 @@ open class ChatSessionRepositoryImpl(
     override fun createSession(sessionId: String, owner: StoredUser, title: String?): StoredSession {
         logger.debug("Creating session {} for owner {}", sessionId, owner.id)
 
+        val now = clock.instant()
         val session = StoredSession(
             session = SessionData(
                 sessionId = sessionId,
                 title = title,
-                createdAt = Instant.now()
+                createdAt = now,
+                lastActivityAt = now,
             ),
             owner = owner,
             messages = emptyList()
@@ -92,11 +100,13 @@ open class ChatSessionRepositoryImpl(
             recipient = messageRecipient
         )
 
+        val now = clock.instant()
         val session = StoredSession(
             session = SessionData(
                 sessionId = sessionId,
                 title = title,
-                createdAt = Instant.now()
+                createdAt = now,
+                lastActivityAt = now,
             ),
             owner = owner,
             messages = listOf(message)
@@ -120,8 +130,32 @@ open class ChatSessionRepositoryImpl(
             where {
                 owner.id eq userId
             }
+            orderBy(
+                StoredSessionQueryDsl.INSTANCE.session.lastActivityAt.desc(),
+                StoredSessionQueryDsl.INSTANCE.session.sessionId.desc(),
+            )
         }
     }
+
+    @Transactional(readOnly = true)
+    override fun listSessionsForUser(userId: String, page: SessionPageRequest): SessionPage<StoredSession> =
+        loadSessionPage(page, loader = {
+            graphObjectManager.loadAll<StoredSession> {
+                where { owner.id eq userId }
+                orderBy(
+                    StoredSessionQueryDsl.INSTANCE.session.lastActivityAt.desc(),
+                    StoredSessionQueryDsl.INSTANCE.session.sessionId.desc(),
+                )
+                page.cursor?.let { encoded ->
+                    val cursor = SessionCursorCodec.decode(encoded)
+                    seekAfter(
+                        StoredSessionQueryDsl.INSTANCE.session.lastActivityAt.after(cursor.lastActivityAt),
+                        StoredSessionQueryDsl.INSTANCE.session.sessionId.after(cursor.sessionId),
+                    )
+                }
+                limit(page.pageSize + 1)
+            }
+        }, sessionData = { it.session })
 
     @Transactional(readOnly = true)
     override fun listSessionSummariesForUser(userId: String): List<SessionSummary> {
@@ -131,8 +165,34 @@ open class ChatSessionRepositoryImpl(
             where {
                 owner.id eq userId
             }
+            orderBy(
+                SessionSummaryQueryDsl.INSTANCE.session.lastActivityAt.desc(),
+                SessionSummaryQueryDsl.INSTANCE.session.sessionId.desc(),
+            )
         }
     }
+
+    @Transactional(readOnly = true)
+    override fun listSessionSummariesForUser(
+        userId: String,
+        page: SessionPageRequest,
+    ): SessionPage<SessionSummary> = loadSessionPage(page, loader = {
+        graphObjectManager.loadAll<SessionSummary> {
+            where { owner.id eq userId }
+            orderBy(
+                SessionSummaryQueryDsl.INSTANCE.session.lastActivityAt.desc(),
+                SessionSummaryQueryDsl.INSTANCE.session.sessionId.desc(),
+            )
+            page.cursor?.let { encoded ->
+                val cursor = SessionCursorCodec.decode(encoded)
+                seekAfter(
+                    SessionSummaryQueryDsl.INSTANCE.session.lastActivityAt.after(cursor.lastActivityAt),
+                    SessionSummaryQueryDsl.INSTANCE.session.sessionId.after(cursor.sessionId),
+                )
+            }
+            limit(page.pageSize + 1)
+        }
+    }, sessionData = { it.session })
 
     @Transactional(readOnly = true)
     override fun countSessionsForUser(userId: String): Long {
@@ -173,7 +233,7 @@ open class ChatSessionRepositoryImpl(
         logger.debug("Adding message {} to session {}", messageData.messageId, sessionId)
 
         // Verify session exists — MERGE on SessionRef would silently create a bare node
-        if (graphObjectManager.load<StoredSession>(sessionId) == null) {
+        if (graphObjectManager.load<SessionRef>(sessionId) == null) {
             throw IllegalArgumentException("Session not found: $sessionId")
         }
 
@@ -186,6 +246,7 @@ open class ChatSessionRepositoryImpl(
             )
         )
         graphObjectManager.save(newMessage, CascadeType.PRESERVE)
+        advanceActivity(sessionId, clock.instant())
 
         return findBySessionId(sessionId).orElseThrow {
             IllegalStateException("Session not found after adding message: $sessionId")
@@ -231,5 +292,35 @@ open class ChatSessionRepositoryImpl(
     @Transactional
     override fun deleteAll() {
         graphObjectManager.deleteAll<StoredSession> { }
+    }
+
+    private fun advanceActivity(sessionId: String, activityAt: Instant) {
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement(
+                    """
+                    MATCH (session:ChatSession {sessionId: ${'$'}sessionId})
+                    SET session.lastActivityAt = CASE
+                        WHEN session.lastActivityAt IS NULL OR session.lastActivityAt < ${'$'}activityAt
+                        THEN ${'$'}activityAt ELSE session.lastActivityAt END
+                    """.trimIndent()
+                )
+                .bind(mapOf("sessionId" to sessionId, "activityAt" to activityAt))
+        )
+    }
+
+    private fun <T> loadSessionPage(
+        page: SessionPageRequest,
+        loader: () -> List<T>,
+        sessionData: (T) -> SessionData,
+    ): SessionPage<T> {
+        val loaded = loader()
+        val items = loaded.take(page.pageSize)
+        val nextCursor = if (loaded.size > page.pageSize) {
+            items.lastOrNull()?.let(sessionData)?.let {
+                SessionCursorCodec.encode(SessionCursor(it.lastActivityAt, it.sessionId))
+            }
+        } else null
+        return SessionPage(items, nextCursor)
     }
 }
