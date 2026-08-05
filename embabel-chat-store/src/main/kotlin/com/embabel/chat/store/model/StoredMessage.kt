@@ -154,7 +154,15 @@ data class SimpleStoredMessage(
      * Used for routing (e.g., WebSocket notifications).
      */
     @GraphRelationship(type = "SENT_TO", direction = Direction.OUTGOING)
-    val recipient: StoredUser? = null
+    val recipient: StoredUser? = null,
+
+    /**
+     * Files attached to this message. Empty for the overwhelming majority of messages;
+     * loading them with the message is what makes an attachment survive a conversation
+     * reload rather than existing only for the turn it arrived in.
+     */
+    @GraphRelationship(type = "HAS_ATTACHMENT", direction = Direction.OUTGOING)
+    val attachments: List<AttachmentData> = emptyList()
 ) : Message {
     // Convenience accessors for common properties
     val messageId: String get() = message.messageId
@@ -188,7 +196,11 @@ data class AttributedMessage(
     val author: UserRef? = null,
 
     @GraphRelationship(type = "SENT_TO", direction = Direction.OUTGOING)
-    val recipient: UserRef? = null
+    val recipient: UserRef? = null,
+
+    /** Files attached to this message. See [SimpleStoredMessage.attachments]. */
+    @GraphRelationship(type = "HAS_ATTACHMENT", direction = Direction.OUTGOING)
+    val attachments: List<AttachmentData> = emptyList()
 )
 
 /**

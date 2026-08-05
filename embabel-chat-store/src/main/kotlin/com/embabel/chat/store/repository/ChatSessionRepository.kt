@@ -15,6 +15,7 @@
  */
 package com.embabel.chat.store.repository
 
+import com.embabel.chat.store.model.AttachmentData
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.SessionSummary
 import com.embabel.chat.store.model.SimpleStoredMessage
@@ -124,13 +125,15 @@ interface ChatSessionRepository {
      * @param messageData the message data
      * @param author optional author of the message (who sent it)
      * @param recipient optional recipient of the message (who should receive it)
+     * @param attachments files attached to this message; empty for most messages
      * @return the updated session
      */
     fun addMessage(
         sessionId: String,
         messageData: MessageData,
         author: StoredUser? = null,
-        recipient: StoredUser? = null
+        recipient: StoredUser? = null,
+        attachments: List<AttachmentData> = emptyList()
     ): StoredSession
 
     /**
