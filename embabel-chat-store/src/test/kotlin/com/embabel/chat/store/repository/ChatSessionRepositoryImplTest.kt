@@ -17,6 +17,7 @@ package com.embabel.chat.store.repository
 
 import com.embabel.chat.MessageRole
 import com.embabel.chat.store.TestApplication
+import com.embabel.chat.store.model.AttachmentData
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.TestSessionUser
 import org.drivine.manager.GraphObjectManager
@@ -707,5 +708,95 @@ class ChatSessionRepositoryImplTest {
         // Then
         val found = chatSessionRepository.findBySessionId(sessionId)
         assertFalse(found.isPresent)
+    }
+
+    @Test
+    fun `attachments survive a reload`() {
+        // The whole point of the feature: re-reading a conversation must still show what was
+        // shared, not just the caption that referred to it.
+        val sessionId = UUID.randomUUID().toString()
+        chatSessionRepository.createSession(sessionId, testUser, "With Attachment")
+
+        val attachment = AttachmentData.of(
+            filename = "ledger.txt",
+            mimeType = "text/plain",
+            sizeBytes = 208080,
+            contentHash = "a".repeat(64),
+            storageUri = "world://uploads/ledger.txt",
+        )
+
+        chatSessionRepository.addMessage(
+            sessionId = sessionId,
+            messageData = MessageData(
+                messageId = UUID.randomUUID().toString(),
+                role = MessageRole.USER,
+                content = "here is my ledger",
+                createdAt = Instant.now(),
+            ),
+            author = testUser,
+            attachments = listOf(attachment),
+        )
+
+        val reloaded = chatSessionRepository.getMessages(sessionId).single()
+        assertEquals(1, reloaded.attachments.size)
+        val found = reloaded.attachments.single()
+        assertEquals(attachment.attachmentId, found.attachmentId)
+        assertEquals("ledger.txt", found.filename)
+        assertEquals("text/plain", found.mimeType)
+        assertEquals(208080L, found.sizeBytes)
+        assertEquals("world://uploads/ledger.txt", found.storageUri)
+        assertEquals(1, countNodes("Attachment", "attachmentId", attachment.attachmentId))
+    }
+
+    @Test
+    fun `a message with no attachments loads an empty list`() {
+        val sessionId = UUID.randomUUID().toString()
+        chatSessionRepository.createSession(sessionId, testUser, "No Attachment")
+
+        chatSessionRepository.addMessage(
+            sessionId = sessionId,
+            messageData = MessageData(
+                messageId = UUID.randomUUID().toString(),
+                role = MessageRole.USER,
+                content = "just text",
+                createdAt = Instant.now(),
+            ),
+            author = testUser,
+        )
+
+        assertTrue(chatSessionRepository.getMessages(sessionId).single().attachments.isEmpty())
+    }
+
+    @Test
+    fun `deleting a session removes its attachments`() {
+        // Attachments hang off messages, and messages cascade on session delete. If the
+        // cascade does not reach them, deleted conversations leave orphaned :Attachment
+        // nodes pointing at files nobody can reach.
+        val sessionId = UUID.randomUUID().toString()
+        chatSessionRepository.createSession(sessionId, testUser, "Doomed")
+
+        val attachment = AttachmentData.of(
+            filename = "receipt.pdf",
+            mimeType = "application/pdf",
+            sizeBytes = 1024,
+            contentHash = "b".repeat(64),
+            storageUri = "world://uploads/receipt.pdf",
+        )
+        chatSessionRepository.addMessage(
+            sessionId = sessionId,
+            messageData = MessageData(
+                messageId = UUID.randomUUID().toString(),
+                role = MessageRole.USER,
+                content = "a receipt",
+                createdAt = Instant.now(),
+            ),
+            author = testUser,
+            attachments = listOf(attachment),
+        )
+        assertEquals(1, countNodes("Attachment", "attachmentId", attachment.attachmentId))
+
+        chatSessionRepository.deleteSession(sessionId)
+
+        assertEquals(0, countNodes("Attachment", "attachmentId", attachment.attachmentId))
     }
 }

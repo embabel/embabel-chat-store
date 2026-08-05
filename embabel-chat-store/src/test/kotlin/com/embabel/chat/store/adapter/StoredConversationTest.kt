@@ -100,7 +100,7 @@ class StoredConversationTest {
             owner = user,
             messages = messages.toList()
         )
-        whenever(repository.addMessage(eq(sessionId), any(), any(), any())).thenReturn(session)
+        whenever(repository.addMessage(eq(sessionId), any(), any(), any(), any())).thenReturn(session)
         return session
     }
 
@@ -117,7 +117,7 @@ class StoredConversationTest {
                 SimpleStoredMessage(MessageData("msg-1", MessageRole.USER, "Hello", Instant.now()))
             )
         )
-        whenever(repository.addMessage(eq(sessionId), any(), any(), any())).thenAnswer {
+        whenever(repository.addMessage(eq(sessionId), any(), any(), any(), any())).thenAnswer {
             dbLatch.await(5, TimeUnit.SECONDS)
             session
         }
@@ -142,7 +142,7 @@ class StoredConversationTest {
     fun `messages deduplicates pending and DB results after persistence completes`() {
         val persistedLatch = CountDownLatch(1)
 
-        whenever(repository.addMessage(eq(sessionId), any(), any(), any())).thenAnswer { invocation ->
+        whenever(repository.addMessage(eq(sessionId), any(), any(), any(), any())).thenAnswer { invocation ->
             val messageData = invocation.getArgument<MessageData>(1)
             val resultSession = StoredSession(
                 session = SessionData(sessionId = sessionId, title = "Test", createdAt = Instant.now()),
@@ -162,7 +162,7 @@ class StoredConversationTest {
 
         // Capture the messageId that was generated
         val captor = argumentCaptor<MessageData>()
-        verify(repository, timeout(5000)).addMessage(eq(sessionId), captor.capture(), any(), any())
+        verify(repository, timeout(5000)).addMessage(eq(sessionId), captor.capture(), any(), any(), any())
         val persistedData = captor.firstValue
 
         // Now getMessages returns the persisted message
@@ -179,7 +179,7 @@ class StoredConversationTest {
     @Test
     fun `message stays in pending buffer on persistence failure`() {
         val failureLatch = CountDownLatch(1)
-        whenever(repository.addMessage(eq(sessionId), any(), any(), any()))
+        whenever(repository.addMessage(eq(sessionId), any(), any(), any(), any()))
             .thenAnswer {
                 failureLatch.countDown()
                 throw RuntimeException("DB unavailable")
@@ -201,7 +201,7 @@ class StoredConversationTest {
     @Test
     fun `multiple messages maintain order in pending buffer`() {
         val latch = CountDownLatch(1)
-        whenever(repository.addMessage(eq(sessionId), any(), any(), any())).thenAnswer {
+        whenever(repository.addMessage(eq(sessionId), any(), any(), any(), any())).thenAnswer {
             latch.await(5, TimeUnit.SECONDS)
             StoredSession(
                 session = SessionData(sessionId = sessionId, title = "Test", createdAt = Instant.now()),
@@ -265,7 +265,7 @@ class StoredConversationTest {
 
     @Test
     fun `PERSISTENCE_FAILED event is published on DB failure`() {
-        whenever(repository.addMessage(eq(sessionId), any(), any(), any()))
+        whenever(repository.addMessage(eq(sessionId), any(), any(), any(), any()))
             .thenThrow(RuntimeException("Connection refused"))
 
         val conversation = createConversation()
@@ -419,7 +419,7 @@ class StoredConversationTest {
         conversation.addMessage(UserMessage(content = "Hello"))
 
         val captor = argumentCaptor<MessageData>()
-        verify(repository, timeout(5000)).addMessage(eq(sessionId), captor.capture(), any(), any())
+        verify(repository, timeout(5000)).addMessage(eq(sessionId), captor.capture(), any(), any(), any())
         assertArrayEquals(vector, captor.firstValue.embedding)
         assertEquals("test-model", captor.firstValue.embeddingModel)
     }
@@ -433,7 +433,7 @@ class StoredConversationTest {
         conversation.addMessage(UserMessage(content = "Hello"))
 
         val captor = argumentCaptor<MessageData>()
-        verify(repository, timeout(5000)).addMessage(eq(sessionId), captor.capture(), any(), any())
+        verify(repository, timeout(5000)).addMessage(eq(sessionId), captor.capture(), any(), any(), any())
         assertNull(captor.firstValue.embedding)
         assertNull(captor.firstValue.embeddingModel)
     }
@@ -455,7 +455,7 @@ class StoredConversationTest {
         conversation.addMessage(UserMessage(content = "Hello"))
 
         val captor = argumentCaptor<MessageData>()
-        verify(repository, timeout(5000)).addMessage(eq(sessionId), captor.capture(), any(), any())
+        verify(repository, timeout(5000)).addMessage(eq(sessionId), captor.capture(), any(), any(), any())
         assertNull(captor.firstValue.embedding)
         assertNull(captor.firstValue.embeddingModel)
     }
@@ -472,7 +472,7 @@ class StoredConversationTest {
         conversation.addMessage(UserMessage(content = "Hello"))
 
         val captor = argumentCaptor<MessageData>()
-        verify(repository, timeout(5000)).addMessage(eq(sessionId), captor.capture(), any(), any())
+        verify(repository, timeout(5000)).addMessage(eq(sessionId), captor.capture(), any(), any(), any())
         assertEquals("Hello", captor.firstValue.content)
         assertNull(captor.firstValue.embedding)
         assertNull(captor.firstValue.embeddingModel)

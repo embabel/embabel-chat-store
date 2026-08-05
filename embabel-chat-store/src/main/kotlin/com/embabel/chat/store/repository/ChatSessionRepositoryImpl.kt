@@ -16,6 +16,7 @@
 package com.embabel.chat.store.repository
 
 import com.embabel.chat.store.event.SessionCreatedEvent
+import com.embabel.chat.store.model.AttachmentData
 import com.embabel.chat.store.model.AttributedMessage
 import com.embabel.chat.store.model.DeletableSession
 import com.embabel.chat.store.model.MessageData
@@ -248,9 +249,13 @@ open class ChatSessionRepositoryImpl(
         sessionId: String,
         messageData: MessageData,
         author: StoredUser?,
-        recipient: StoredUser?
+        recipient: StoredUser?,
+        attachments: List<AttachmentData>
     ): StoredSession {
-        logger.debug("Adding message {} to session {}", messageData.messageId, sessionId)
+        logger.debug(
+            "Adding message {} to session {} ({} attachments)",
+            messageData.messageId, sessionId, attachments.size,
+        )
 
         // Verify session exists — MERGE on SessionRef would silently create a bare node
         if (graphObjectManager.load<SessionRef>(sessionId) == null) {
@@ -262,7 +267,8 @@ open class ChatSessionRepositoryImpl(
             message = AttributedMessage(
                 message = messageData,
                 author = author?.let { UserRef(it.id) },
-                recipient = recipient?.let { UserRef(it.id) }
+                recipient = recipient?.let { UserRef(it.id) },
+                attachments = attachments
             )
         )
         graphObjectManager.save(newMessage, CascadeType.PRESERVE)

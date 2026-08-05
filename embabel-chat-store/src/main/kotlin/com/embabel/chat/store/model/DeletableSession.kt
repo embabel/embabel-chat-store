@@ -28,17 +28,22 @@ import org.drivine.annotation.Root
  * the session and its messages and nothing else.
  *
  * Deliberately narrow:
- * - The child is [MessageData] (the bare `:StoredMessage` node fragment), **not**
- *   [SimpleStoredMessage] (which carries AUTHORED_BY/SENT_TO → [StoredUser]).
- *   A DETACH DELETE of each message node drops those edges while leaving the
- *   `:User` nodes intact.
+ * - The child is [DeletableMessage], which carries the `:StoredMessage` node and its
+ *   HAS_ATTACHMENT children — but **not** [SimpleStoredMessage] (which carries
+ *   AUTHORED_BY/SENT_TO → [StoredUser]). A DETACH DELETE of each message node drops
+ *   those edges while leaving the `:User` nodes intact.
  * - The OWNED_BY owner is omitted entirely. Because the view declares only
  *   HAS_MESSAGE, the cascade physically cannot reach `:User` — the safety is
  *   structural, not a flag.
  *
+ * Attachments are included precisely because that structural narrowness cuts both ways:
+ * a message's attachments are owned by the message and reachable from nowhere else, so a
+ * cascade that stops at `:StoredMessage` leaves `:Attachment` nodes orphaned, referencing
+ * stored bytes nothing can reach.
+ *
  * Neo4j structure traversed:
  * ```
- * (session:ChatSession)-[:HAS_MESSAGE]->(msg:StoredMessage)
+ * (session:ChatSession)-[:HAS_MESSAGE]->(msg:StoredMessage)-[:HAS_ATTACHMENT]->(att:Attachment)
  * ```
  *
  * @see com.embabel.chat.store.model.StoredSession for the full read view
@@ -51,8 +56,8 @@ data class DeletableSession(
     @Root val session: SessionData,
 
     /**
-     * The session's messages, as bare `:StoredMessage` node fragments.
+     * The session's messages, with their attachments.
      */
     @GraphRelationship(type = "HAS_MESSAGE", direction = Direction.OUTGOING)
-    val messages: List<MessageData> = emptyList()
+    val messages: List<DeletableMessage> = emptyList()
 )

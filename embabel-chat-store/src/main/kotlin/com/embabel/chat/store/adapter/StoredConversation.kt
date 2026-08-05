@@ -23,6 +23,7 @@ import com.embabel.chat.MessageRole
 import com.embabel.chat.event.MessageEvent
 import com.embabel.chat.store.embedding.MessageEmbedder
 import com.embabel.chat.store.event.SessionEventAwaiter
+import com.embabel.chat.store.model.AttachmentData
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.StoredSession
 import com.embabel.chat.store.model.StoredUser
@@ -141,6 +142,32 @@ class StoredConversation(
     }
 
     /**
+     * Add a message carrying attached files.
+     *
+     * Deliberately NOT on the [com.embabel.chat.Conversation] interface. Attachments are a
+     * persistence-layer capability — a conversation held only in memory has nowhere to put
+     * bytes and no durable id to link them by — so widening the shared interface would
+     * oblige every implementation to answer a question only a stored one can. Callers
+     * holding a [StoredConversation] get this; callers holding the interface keep exactly
+     * the behaviour they have today.
+     *
+     * Attachments are written with the message on the same async write, so an attachment
+     * cannot end up linked to a message that never landed.
+     *
+     * @param message the message to add
+     * @param attachments files to attach; empty behaves exactly like [addMessage]
+     * @return the message (returned immediately, before persistence completes)
+     */
+    fun addMessageWithAttachments(message: Message, attachments: List<AttachmentData>): Message {
+        val (from, to) = when (message.role) {
+            MessageRole.USER -> user to agent
+            MessageRole.ASSISTANT -> agent to user
+            else -> null to user
+        }
+        return addMessageInternal(message, from, to, attachments)
+    }
+
+    /**
      * Add a message with explicit author attribution.
      *
      * The recipient is derived from role:
@@ -207,7 +234,8 @@ class StoredConversation(
     private fun addMessageInternal(
         message: Message,
         from: StoredUser?,
-        to: StoredUser?
+        to: StoredUser?,
+        attachments: List<AttachmentData> = emptyList()
     ): Message {
         val messageData = MessageData.from(message, messageId = UUIDv7.generateString())
 
@@ -241,7 +269,7 @@ class StoredConversation(
         scope.launch {
             try {
                 val messageDataForDb = embedMessageData(message, messageData)
-                val updatedSession = addMessageWithAwait(id, messageDataForDb, from, to, signal)
+                val updatedSession = addMessageWithAwait(id, messageDataForDb, from, to, signal, attachments)
 
                 // Persisted — remove from pending buffer (DB is now the source of truth)
                 pendingMessages.remove(messageData)
@@ -328,10 +356,11 @@ class StoredConversation(
         messageData: MessageData,
         author: StoredUser?,
         recipient: StoredUser?,
-        signal: CompletableDeferred<Unit>
+        signal: CompletableDeferred<Unit>,
+        attachments: List<AttachmentData> = emptyList()
     ): StoredSession {
         return try {
-            repository.addMessage(sessionId, messageData, author, recipient)
+            repository.addMessage(sessionId, messageData, author, recipient, attachments)
         } catch (e: IllegalArgumentException) {
             if (e.message?.contains("Session not found") != true) throw e
 
@@ -340,7 +369,7 @@ class StoredConversation(
                 sessionId, messageData.messageId
             )
             sessionEventAwaiter.awaitSession(signal)
-            repository.addMessage(sessionId, messageData, author, recipient)
+            repository.addMessage(sessionId, messageData, author, recipient, attachments)
         }
     }
 

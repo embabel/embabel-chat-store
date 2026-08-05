@@ -125,6 +125,7 @@ open class ChatStoreAutoConfiguration {
         UniquenessConstraintSpec(label = "ChatSession", property = "sessionId"),
         UniquenessConstraintSpec(label = "StoredMessage", property = "messageId"),
         UniquenessConstraintSpec(label = "User", property = "id"),
+        UniquenessConstraintSpec(label = "Attachment", property = "attachmentId"),
         RangeIndexSpec(label = "ChatSession", property = "lastActivityAt"),
     )
 
