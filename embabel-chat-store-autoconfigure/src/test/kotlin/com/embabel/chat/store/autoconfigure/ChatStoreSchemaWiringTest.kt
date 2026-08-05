@@ -62,7 +62,7 @@ class ChatStoreSchemaWiringTest {
             assertThat(constraintCatalog.constraints.map { (it as UniquenessConstraintSpec).label })
                 .containsExactlyInAnyOrder("ChatSession", "StoredMessage", "User")
             assertThat(constraintCatalog.indexes).containsExactly(
-                RangeIndexSpec("ChatSession", listOf("lastActivityAt", "sessionId"))
+                RangeIndexSpec("ChatSession", "lastActivityAt")
             )
 
             val vectorCatalog = context.getBean("chatStoreVectorIndexSchema", SchemaCatalog::class.java)
@@ -83,7 +83,7 @@ class ChatStoreSchemaWiringTest {
                 val catalogs = context.getBeansOfType(SchemaCatalog::class.java).values
                 assertThat(catalogs).hasSize(1)
                 assertThat(catalogs.single().indexes).containsExactly(
-                    RangeIndexSpec("ChatSession", listOf("lastActivityAt", "sessionId"))
+                    RangeIndexSpec("ChatSession", "lastActivityAt")
                 )
                 assertThat(catalogs.single().constraints).hasSize(3)
             }
@@ -95,7 +95,7 @@ class ChatStoreSchemaWiringTest {
             val catalogs = context.getBeansOfType(SchemaCatalog::class.java).values
             assertThat(catalogs).hasSize(1)
             assertThat(catalogs.single().indexes).containsExactly(
-                RangeIndexSpec("ChatSession", listOf("lastActivityAt", "sessionId"))
+                RangeIndexSpec("ChatSession", "lastActivityAt")
             )
             assertThat(catalogs.single().constraints).hasSize(3)
         }

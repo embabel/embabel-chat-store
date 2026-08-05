@@ -125,7 +125,7 @@ open class ChatStoreAutoConfiguration {
         UniquenessConstraintSpec(label = "ChatSession", property = "sessionId"),
         UniquenessConstraintSpec(label = "StoredMessage", property = "messageId"),
         UniquenessConstraintSpec(label = "User", property = "id"),
-        RangeIndexSpec(label = "ChatSession", properties = listOf("lastActivityAt", "sessionId")),
+        RangeIndexSpec(label = "ChatSession", property = "lastActivityAt"),
     )
 
     /** Backfills activity for installations that predate most-recently-active ordering. */

@@ -27,7 +27,7 @@ import java.time.Instant
  * when sorted lexicographically.
  */
 @NodeFragment(labels = ["ChatSession"])
-@RangeIndex(properties = ["lastActivityAt", "sessionId"])
+@RangeIndex(properties = ["lastActivityAt"])
 data class SessionData(
     /**
      * Unique session identifier (UUIDv7 recommended).

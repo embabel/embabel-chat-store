@@ -23,7 +23,7 @@ version = "0.5.0-SNAPSHOT"
 // later compiled against. Previously drivineVersion was hardcoded here, so bumping the pom silently
 // generated the DSL against a different Drivine than the one it compiled against. The fallbacks keep a
 // standalone `./gradlew kspKotlin` working.
-val drivineVersion = (findProperty("drivineVersion") as String?) ?: "0.0.74-SNAPSHOT"
+val drivineVersion = (findProperty("drivineVersion") as String?) ?: "0.0.74"
 val embabelAgentVersion = (findProperty("embabelAgentVersion") as String?) ?: "1.5.0-SNAPSHOT"
 val embabelCommonVersion = (findProperty("embabelCommonVersion") as String?) ?: "2.0.0-SNAPSHOT"
 
