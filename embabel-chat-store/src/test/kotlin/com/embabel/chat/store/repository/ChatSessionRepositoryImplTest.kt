@@ -29,7 +29,9 @@ import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.transaction.annotation.Transactional
+import java.time.Clock
 import java.time.Instant
+import java.time.ZoneOffset
 import java.util.UUID
 
 /**
@@ -80,8 +82,117 @@ class ChatSessionRepositoryImplTest {
         assertEquals(sessionId, created.session.sessionId)
         assertEquals("Test Session", created.session.title)
         assertNotNull(created.session.createdAt)
+        assertEquals(created.session.createdAt, created.session.lastActivityAt)
         assertEquals(testUser.id, created.owner.id)
         assertTrue(created.messages.isEmpty())
+    }
+
+    @Test
+    fun `pages sessions by activity with session ID as deterministic tie breaker`() {
+        val timestamps = mapOf(
+            "session-a" to Instant.parse("2026-01-01T00:00:01Z"),
+            "session-b" to Instant.parse("2026-01-01T00:00:03Z"),
+            "session-c" to Instant.parse("2026-01-01T00:00:03Z"),
+            "session-d" to Instant.parse("2026-01-01T00:00:02Z"),
+            "session-e" to Instant.parse("2026-01-01T00:00:00Z"),
+        )
+        timestamps.forEach { (id, activity) ->
+            chatSessionRepository.createSession(id, testUser, id)
+            setActivity(id, activity)
+        }
+
+        val first = chatSessionRepository.listSessionsForUser(testUser.id, SessionPageRequest(pageSize = 2))
+        val second = chatSessionRepository.listSessionsForUser(
+            testUser.id,
+            SessionPageRequest(pageSize = 2, cursor = first.nextCursor),
+        )
+        val third = chatSessionRepository.listSessionsForUser(
+            testUser.id,
+            SessionPageRequest(pageSize = 2, cursor = second.nextCursor),
+        )
+
+        assertEquals(listOf("session-c", "session-b"), first.items.map { it.session.sessionId })
+        assertEquals(listOf("session-d", "session-a"), second.items.map { it.session.sessionId })
+        assertEquals(listOf("session-e"), third.items.map { it.session.sessionId })
+        assertNotNull(first.nextCursor)
+        assertNotNull(second.nextCursor)
+        assertNull(third.nextCursor)
+    }
+
+    @Test
+    fun `summary pagination has the same ordering and remains scoped to owner`() {
+        val other = TestSessionUser(UUID.randomUUID().toString(), "Other User")
+        graphObjectManager.save(other)
+        chatSessionRepository.createSession("mine-old", testUser)
+        chatSessionRepository.createSession("mine-new", testUser)
+        chatSessionRepository.createSession("theirs", other)
+        setActivity("mine-old", Instant.parse("2026-01-01T00:00:00Z"))
+        setActivity("mine-new", Instant.parse("2026-01-02T00:00:00Z"))
+        setActivity("theirs", Instant.parse("2026-01-03T00:00:00Z"))
+
+        val first = chatSessionRepository.listSessionSummariesForUser(
+            testUser.id,
+            SessionPageRequest(pageSize = 1),
+        )
+        val second = chatSessionRepository.listSessionSummariesForUser(
+            testUser.id,
+            SessionPageRequest(pageSize = 1, cursor = first.nextCursor),
+        )
+
+        assertEquals(listOf("mine-new"), first.items.map { it.session.sessionId })
+        assertEquals(listOf("mine-old"), second.items.map { it.session.sessionId })
+        assertNull(second.nextCursor)
+    }
+
+    @Test
+    fun `activity migration backfills latest message and is idempotent`() {
+        val sessionId = UUID.randomUUID().toString()
+        chatSessionRepository.createSession(sessionId, testUser)
+        val latest = Instant.parse("2026-02-03T04:05:06Z")
+        persistenceManager.execute(
+            QuerySpecification.withStatement(
+                "MATCH (s:ChatSession {sessionId: \$id}) SET s.lastActivityAt = null"
+            ).bind(mapOf("id" to sessionId))
+        )
+        chatSessionRepository.addMessage(
+            sessionId,
+            MessageData(UUID.randomUUID().toString(), MessageRole.USER, "hi", latest),
+        )
+        persistenceManager.execute(
+            QuerySpecification.withStatement(
+                "MATCH (s:ChatSession {sessionId: \$id}) SET s.lastActivityAt = null"
+            ).bind(mapOf("id" to sessionId))
+        )
+
+        SessionActivityMigration(persistenceManager).migrate()
+        SessionActivityMigration(persistenceManager).migrate()
+
+        assertEquals(latest, chatSessionRepository.findBySessionId(sessionId).get().session.lastActivityAt)
+    }
+
+    @Test
+    fun `message writes advance activity monotonically by write time`() {
+        val sessionId = UUID.randomUUID().toString()
+        val createdAt = Instant.parse("2026-01-01T00:00:00Z")
+        val activeAt = Instant.parse("2026-01-03T00:00:00Z")
+        val staleWriterTime = Instant.parse("2026-01-02T00:00:00Z")
+        fun repositoryAt(instant: Instant) = ChatSessionRepositoryImpl(
+            graphObjectManager,
+            persistenceManager,
+            clock = Clock.fixed(instant, ZoneOffset.UTC),
+        )
+
+        repositoryAt(createdAt).createSession(sessionId, testUser)
+        repositoryAt(activeAt).addMessage(
+            sessionId,
+            MessageData(UUID.randomUUID().toString(), MessageRole.USER, "newer write", createdAt),
+        )
+        repositoryAt(staleWriterTime).addMessage(
+            sessionId,
+            MessageData(UUID.randomUUID().toString(), MessageRole.USER, "stale writer", activeAt.plusSeconds(10)),
+        )
+
+        assertEquals(activeAt, chatSessionRepository.findBySessionId(sessionId).get().session.lastActivityAt)
     }
 
     @Test
@@ -421,6 +532,16 @@ class ChatSessionRepositoryImplTest {
                 .bind(mapOf("id" to id))
                 .transform(Int::class.java)
         )
+
+    private fun setActivity(sessionId: String, activityAt: Instant) {
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement(
+                    "MATCH (s:ChatSession {sessionId: \$sessionId}) SET s.lastActivityAt = \$activityAt"
+                )
+                .bind(mapOf("sessionId" to sessionId, "activityAt" to activityAt))
+        )
+    }
 
     @Test
     fun `test add message to session with author`() {

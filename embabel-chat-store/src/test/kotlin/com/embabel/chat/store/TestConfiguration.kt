@@ -66,7 +66,10 @@ class TestApplication {
     }
 
     @Bean
-    fun chatSessionRepository(graphObjectManager: GraphObjectManager): ChatSessionRepository {
-        return ChatSessionRepositoryImpl(graphObjectManager)
+    fun chatSessionRepository(
+        graphObjectManager: GraphObjectManager,
+        persistenceManager: PersistenceManager,
+    ): ChatSessionRepository {
+        return ChatSessionRepositoryImpl(graphObjectManager, persistenceManager)
     }
 }

@@ -20,6 +20,7 @@ import com.embabel.chat.store.repository.ChatSessionRepository
 import com.embabel.common.ai.model.EmbeddingService
 import org.assertj.core.api.Assertions.assertThat
 import org.drivine.schema.SchemaCatalog
+import org.drivine.schema.RangeIndexSpec
 import org.drivine.schema.UniquenessConstraintSpec
 import org.drivine.schema.VectorIndexSpec
 import org.junit.jupiter.api.Test
@@ -57,11 +58,14 @@ class ChatStoreSchemaWiringTest {
             val catalogs = context.getBeansOfType(SchemaCatalog::class.java).values
             assertThat(catalogs).hasSize(2)
 
-            val constraintCatalog = catalogs.first { it.constraints.isNotEmpty() }
+            val constraintCatalog = context.getBean("chatStoreConstraintSchema", SchemaCatalog::class.java)
             assertThat(constraintCatalog.constraints.map { (it as UniquenessConstraintSpec).label })
                 .containsExactlyInAnyOrder("ChatSession", "StoredMessage", "User", "Attachment")
+            assertThat(constraintCatalog.indexes).containsExactly(
+                RangeIndexSpec("ChatSession", "lastActivityAt")
+            )
 
-            val vectorCatalog = catalogs.first { it.indexes.isNotEmpty() }
+            val vectorCatalog = context.getBean("chatStoreVectorIndexSchema", SchemaCatalog::class.java)
             val spec = vectorCatalog.indexes.single() as VectorIndexSpec
             assertThat(spec.label).isEqualTo("StoredMessage")
             assertThat(spec.property).isEqualTo("embedding")
@@ -78,8 +82,10 @@ class ChatStoreSchemaWiringTest {
             .run { context ->
                 val catalogs = context.getBeansOfType(SchemaCatalog::class.java).values
                 assertThat(catalogs).hasSize(1)
-                assertThat(catalogs.single().indexes).isEmpty()
                 assertThat(catalogs.single().constraints).hasSize(4)
+                assertThat(catalogs.single().indexes).containsExactly(
+                    RangeIndexSpec("ChatSession", "lastActivityAt")
+                )
             }
     }
 
@@ -88,8 +94,10 @@ class ChatStoreSchemaWiringTest {
         runner.run { context ->
             val catalogs = context.getBeansOfType(SchemaCatalog::class.java).values
             assertThat(catalogs).hasSize(1)
-            assertThat(catalogs.single().indexes).isEmpty()
             assertThat(catalogs.single().constraints).hasSize(4)
+            assertThat(catalogs.single().indexes).containsExactly(
+                RangeIndexSpec("ChatSession", "lastActivityAt")
+            )
         }
     }
 }

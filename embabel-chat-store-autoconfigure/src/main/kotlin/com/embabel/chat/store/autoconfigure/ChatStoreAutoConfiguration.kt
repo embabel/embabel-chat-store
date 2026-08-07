@@ -27,13 +27,17 @@ import com.embabel.chat.store.embedding.MessageEmbedder
 import com.embabel.chat.store.embedding.RoleFilteringMessageEmbedder
 import com.embabel.chat.store.event.SessionEventAwaiter
 import com.embabel.chat.store.repository.ChatSessionRepository
+import com.embabel.chat.store.repository.SessionActivityMigration
 import com.embabel.chat.support.InMemoryConversationFactory
+import org.drivine.manager.PersistenceManager
+import org.drivine.schema.RangeIndexSpec
 import org.drivine.schema.SchemaCatalog
 import org.drivine.schema.SimilarityFunction
 import org.drivine.schema.UniquenessConstraintSpec
 import org.drivine.schema.VectorIndexSpec
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.boot.ApplicationRunner
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass
@@ -122,7 +126,17 @@ open class ChatStoreAutoConfiguration {
         UniquenessConstraintSpec(label = "StoredMessage", property = "messageId"),
         UniquenessConstraintSpec(label = "User", property = "id"),
         UniquenessConstraintSpec(label = "Attachment", property = "attachmentId"),
+        RangeIndexSpec(label = "ChatSession", property = "lastActivityAt"),
     )
+
+    /** Backfills activity for installations that predate most-recently-active ordering. */
+    @Bean
+    @ConditionalOnBean(PersistenceManager::class)
+    open fun chatStoreSessionActivityMigration(
+        persistenceManager: PersistenceManager,
+    ): ApplicationRunner = ApplicationRunner {
+        SessionActivityMigration(persistenceManager).migrate()
+    }
 
     /**
      * Declares the chat-message vector index, sized to the configured embedding model's

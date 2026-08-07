@@ -25,6 +25,7 @@ import com.embabel.chat.store.model.SessionData
 import com.embabel.chat.store.model.SessionParticipants
 import com.embabel.chat.store.model.SessionRef
 import com.embabel.chat.store.model.SessionSummary
+import com.embabel.chat.store.model.SessionSummaryQueryDsl
 import com.embabel.chat.store.model.SimpleStoredMessage
 import com.embabel.chat.store.model.StoredSession
 import com.embabel.chat.store.model.StoredSessionQueryDsl
@@ -36,13 +37,25 @@ import com.embabel.chat.store.model.loadAll
 import com.embabel.chat.store.model.owner
 import org.drivine.manager.CascadeType
 import org.drivine.manager.GraphObjectManager
+import org.drivine.manager.PersistenceManager
 import org.drivine.manager.delete
 import org.drivine.manager.load
+import org.drivine.query.QuerySpecification
+import org.drivine.query.dsl.OrderBuilder
+import org.drivine.query.dsl.OrderSpec
+import org.drivine.query.dsl.query
 import org.slf4j.LoggerFactory
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.transaction.annotation.Transactional
+import java.time.Clock
 import java.time.Instant
 import java.util.Optional
+
+/** Registers a typed order built outside the block to disambiguate Drivine's binary `asc`/`desc` overloads. */
+context(builder: OrderBuilder<*>)
+private fun registerOrder(order: OrderSpec) {
+    builder(order)
+}
 
 /**
  * Drivine-based implementation of ChatSessionRepository.
@@ -52,7 +65,9 @@ import java.util.Optional
  */
 open class ChatSessionRepositoryImpl(
     private val graphObjectManager: GraphObjectManager,
-    private val eventPublisher: ApplicationEventPublisher? = null
+    private val persistenceManager: PersistenceManager,
+    private val eventPublisher: ApplicationEventPublisher? = null,
+    private val clock: Clock = Clock.systemUTC(),
 ) : ChatSessionRepository {
 
     private val logger = LoggerFactory.getLogger(ChatSessionRepositoryImpl::class.java)
@@ -61,11 +76,13 @@ open class ChatSessionRepositoryImpl(
     override fun createSession(sessionId: String, owner: StoredUser, title: String?): StoredSession {
         logger.debug("Creating session {} for owner {}", sessionId, owner.id)
 
+        val now = clock.instant()
         val session = StoredSession(
             session = SessionData(
                 sessionId = sessionId,
                 title = title,
-                createdAt = Instant.now()
+                createdAt = now,
+                lastActivityAt = now,
             ),
             owner = owner,
             messages = emptyList()
@@ -93,11 +110,13 @@ open class ChatSessionRepositoryImpl(
             recipient = messageRecipient
         )
 
+        val now = clock.instant()
         val session = StoredSession(
             session = SessionData(
                 sessionId = sessionId,
                 title = title,
-                createdAt = Instant.now()
+                createdAt = now,
+                lastActivityAt = now,
             ),
             owner = owner,
             messages = listOf(message)
@@ -117,22 +136,83 @@ open class ChatSessionRepositoryImpl(
 
     @Transactional(readOnly = true)
     override fun listSessionsForUser(userId: String): List<StoredSession> {
+        val lastActivityOrder = StoredSessionQueryDsl.INSTANCE.session.lastActivityAt.desc()
+        val sessionIdOrder = StoredSessionQueryDsl.INSTANCE.session.sessionId.desc()
         return graphObjectManager.loadAll<StoredSession> {
             where {
                 owner.id eq userId
+            }
+            orderBy {
+                registerOrder(lastActivityOrder)
+                registerOrder(sessionIdOrder)
             }
         }
     }
 
     @Transactional(readOnly = true)
+    override fun listSessionsForUser(userId: String, page: SessionPageRequest): SessionPage<StoredSession> {
+        val lastActivityOrder = StoredSessionQueryDsl.INSTANCE.session.lastActivityAt.desc()
+        val sessionIdOrder = StoredSessionQueryDsl.INSTANCE.session.sessionId.desc()
+        return loadSessionPage(page, loader = {
+            graphObjectManager.loadAll<StoredSession> {
+                where { owner.id eq userId }
+                orderBy {
+                    registerOrder(lastActivityOrder)
+                    registerOrder(sessionIdOrder)
+                }
+                page.cursor?.let { encoded ->
+                    val cursor = SessionCursorCodec.decode(encoded)
+                    seek {
+                        query.session.lastActivityAt after cursor.lastActivityAt
+                        query.session.sessionId after cursor.sessionId
+                    }
+                }
+                limit(page.pageSize + 1)
+            }
+        }, sessionData = { it.session })
+    }
+
+    @Transactional(readOnly = true)
     override fun listSessionSummariesForUser(userId: String): List<SessionSummary> {
+        val lastActivityOrder = SessionSummaryQueryDsl.INSTANCE.session.lastActivityAt.desc()
+        val sessionIdOrder = SessionSummaryQueryDsl.INSTANCE.session.sessionId.desc()
         // SessionSummary folds the message count into the query (via @Count), so this
         // returns one flat row per session — no message bodies cross the wire.
         return graphObjectManager.loadAll<SessionSummary> {
             where {
                 owner.id eq userId
             }
+            orderBy {
+                registerOrder(lastActivityOrder)
+                registerOrder(sessionIdOrder)
+            }
         }
+    }
+
+    @Transactional(readOnly = true)
+    override fun listSessionSummariesForUser(
+        userId: String,
+        page: SessionPageRequest,
+    ): SessionPage<SessionSummary> {
+        val lastActivityOrder = SessionSummaryQueryDsl.INSTANCE.session.lastActivityAt.desc()
+        val sessionIdOrder = SessionSummaryQueryDsl.INSTANCE.session.sessionId.desc()
+        return loadSessionPage(page, loader = {
+            graphObjectManager.loadAll<SessionSummary> {
+                where { owner.id eq userId }
+                orderBy {
+                    registerOrder(lastActivityOrder)
+                    registerOrder(sessionIdOrder)
+                }
+                page.cursor?.let { encoded ->
+                    val cursor = SessionCursorCodec.decode(encoded)
+                    seek {
+                        query.session.lastActivityAt after cursor.lastActivityAt
+                        query.session.sessionId after cursor.sessionId
+                    }
+                }
+                limit(page.pageSize + 1)
+            }
+        }, sessionData = { it.session })
     }
 
     @Transactional(readOnly = true)
@@ -178,7 +258,7 @@ open class ChatSessionRepositoryImpl(
         )
 
         // Verify session exists — MERGE on SessionRef would silently create a bare node
-        if (graphObjectManager.load<StoredSession>(sessionId) == null) {
+        if (graphObjectManager.load<SessionRef>(sessionId) == null) {
             throw IllegalArgumentException("Session not found: $sessionId")
         }
 
@@ -192,6 +272,7 @@ open class ChatSessionRepositoryImpl(
             )
         )
         graphObjectManager.save(newMessage, CascadeType.PRESERVE)
+        advanceActivity(sessionId, clock.instant())
 
         return findBySessionId(sessionId).orElseThrow {
             IllegalStateException("Session not found after adding message: $sessionId")
@@ -237,5 +318,35 @@ open class ChatSessionRepositoryImpl(
     @Transactional
     override fun deleteAll() {
         graphObjectManager.deleteAll<StoredSession> { }
+    }
+
+    private fun advanceActivity(sessionId: String, activityAt: Instant) {
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement(
+                    """
+                    MATCH (session:ChatSession {sessionId: ${'$'}sessionId})
+                    SET session.lastActivityAt = CASE
+                        WHEN session.lastActivityAt IS NULL OR session.lastActivityAt < ${'$'}activityAt
+                        THEN ${'$'}activityAt ELSE session.lastActivityAt END
+                    """.trimIndent()
+                )
+                .bind(mapOf("sessionId" to sessionId, "activityAt" to activityAt))
+        )
+    }
+
+    private fun <T> loadSessionPage(
+        page: SessionPageRequest,
+        loader: () -> List<T>,
+        sessionData: (T) -> SessionData,
+    ): SessionPage<T> {
+        val loaded = loader()
+        val items = loaded.take(page.pageSize)
+        val nextCursor = if (loaded.size > page.pageSize) {
+            items.lastOrNull()?.let(sessionData)?.let {
+                SessionCursorCodec.encode(SessionCursor(it.lastActivityAt, it.sessionId))
+            }
+        } else null
+        return SessionPage(items, nextCursor)
     }
 }

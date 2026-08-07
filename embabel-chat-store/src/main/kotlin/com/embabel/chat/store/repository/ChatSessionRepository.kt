@@ -84,6 +84,14 @@ interface ChatSessionRepository {
     fun listSessionsForUser(userId: String): List<StoredSession>
 
     /**
+     * List sessions in descending `(lastActivityAt, sessionId)` order using an opaque keyset cursor.
+     * The session ID is only a unique tie-breaker: arbitrary strings remain deterministic, while
+     * UUIDv7 is still recommended by the creation API. Concurrent activity may move a session ahead
+     * of an already-issued cursor; this method does not provide snapshot isolation across requests.
+     */
+    fun listSessionsForUser(userId: String, page: SessionPageRequest): SessionPage<StoredSession>
+
+    /**
      * List a user's sessions as lightweight summaries — owner plus a message count
      * computed in the query, without loading the messages. Suited to session-list
      * UIs that show a "N messages" badge but not the conversation bodies.
@@ -92,6 +100,11 @@ interface ChatSessionRepository {
      * @return one [SessionSummary] per owned session
      */
     fun listSessionSummariesForUser(userId: String): List<SessionSummary>
+
+    /**
+     * Lightweight equivalent of [listSessionsForUser] with identical ordering and cursor semantics.
+     */
+    fun listSessionSummariesForUser(userId: String, page: SessionPageRequest): SessionPage<SessionSummary>
 
     /**
      * Count the sessions owned by a user, without loading them.

@@ -17,6 +17,7 @@ package com.embabel.chat.store.model
 
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
+import org.drivine.annotation.RangeIndex
 import java.time.Instant
 
 /**
@@ -26,6 +27,7 @@ import java.time.Instant
  * when sorted lexicographically.
  */
 @NodeFragment(labels = ["ChatSession"])
+@RangeIndex(properties = ["lastActivityAt"])
 data class SessionData(
     /**
      * Unique session identifier (UUIDv7 recommended).
@@ -41,6 +43,9 @@ data class SessionData(
      * When the session was created.
      */
     val createdAt: Instant,
+
+    /** Last user-visible conversation activity; used for stable session-list ordering. */
+    val lastActivityAt: Instant = createdAt,
 
     /**
      * Optional metadata for application-specific extensions.
