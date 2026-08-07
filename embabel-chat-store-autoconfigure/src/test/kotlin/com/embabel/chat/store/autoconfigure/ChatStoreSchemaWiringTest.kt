@@ -16,6 +16,7 @@
 package com.embabel.chat.store.autoconfigure
 
 import com.embabel.agent.api.common.Ai
+import com.embabel.chat.store.embedding.MessageEmbedder
 import com.embabel.chat.store.repository.ChatSessionRepository
 import com.embabel.common.ai.model.EmbeddingService
 import org.assertj.core.api.Assertions.assertThat
@@ -25,6 +26,7 @@ import org.drivine.schema.UniquenessConstraintSpec
 import org.drivine.schema.VectorIndexSpec
 import org.junit.jupiter.api.Test
 import org.mockito.kotlin.doReturn
+import org.mockito.kotlin.doThrow
 import org.mockito.kotlin.mock
 import org.springframework.boot.autoconfigure.AutoConfigurations
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
@@ -72,6 +74,77 @@ class ChatStoreSchemaWiringTest {
             assertThat(spec.dimensions).isEqualTo(1536)
             // The embedding model id becomes the catalog version → model swap triggers rebuild.
             assertThat(vectorCatalog.version).isEqualTo("stub-embed-model")
+        }
+    }
+
+    @Test
+    fun `owns the constraint and vector catalogs separately so a skipped vector index cannot clear the model version`() {
+        runner.withBean(Ai::class.java, { ai }).run { context ->
+            val catalogs = context.getBeansOfType(SchemaCatalog::class.java).values
+            assertThat(catalogs.map { it.name })
+                .containsExactlyInAnyOrder(
+                    ChatStoreAutoConfiguration.CONSTRAINT_SCHEMA_OWNER,
+                    ChatStoreAutoConfiguration.VECTOR_SCHEMA_OWNER,
+                )
+            assertThat(catalogs.first { it.constraints.isNotEmpty() }.version).isNull()
+        }
+    }
+
+    @Test
+    fun `skips the vector index when the embedding service reports its own absence`() {
+        val absent = mock<EmbeddingService> {
+            on { dimensions } doThrow IllegalStateException("no embedding model configured")
+        }
+        runner.withBean(Ai::class.java, { ai })
+            .withBean(EmbeddingService::class.java, { absent })
+            .run { context ->
+                val vectorCatalog = context.getBeansOfType(SchemaCatalog::class.java).values
+                    .single { it.name == ChatStoreAutoConfiguration.VECTOR_SCHEMA_OWNER }
+                assertThat(vectorCatalog.isEmpty()).isTrue()
+                assertThat(vectorCatalog.version).isNull()
+            }
+    }
+
+    @Test
+    fun `skips the vector index when the embedding service reports no dimensions`() {
+        val absent = mock<EmbeddingService> {
+            on { dimensions } doReturn 0
+            on { name } doReturn "absent"
+        }
+        runner.withBean(Ai::class.java, { ai })
+            .withBean(EmbeddingService::class.java, { absent })
+            .run { context ->
+                val vectorCatalog = context.getBeansOfType(SchemaCatalog::class.java).values
+                    .single { it.name == ChatStoreAutoConfiguration.VECTOR_SCHEMA_OWNER }
+                assertThat(vectorCatalog.isEmpty()).isTrue()
+            }
+    }
+
+    @Test
+    fun `prefers a unique EmbeddingService bean over the platform default`() {
+        val hostService = mock<EmbeddingService> {
+            on { dimensions } doReturn 768
+            on { name } doReturn "host-embed-model"
+        }
+        runner.withBean(Ai::class.java, { ai })
+            .withBean(EmbeddingService::class.java, { hostService })
+            .run { context ->
+                val vectorCatalog = context.getBeansOfType(SchemaCatalog::class.java).values
+                    .single { it.name == ChatStoreAutoConfiguration.VECTOR_SCHEMA_OWNER }
+                val spec = vectorCatalog.indexes.single() as VectorIndexSpec
+                assertThat(spec.dimensions).isEqualTo(768)
+                assertThat(vectorCatalog.version).isEqualTo("host-embed-model")
+            }
+    }
+
+    @Test
+    fun `starts with a message embedder even when no embedding model is configured`() {
+        val failing = mock<Ai> {
+            on { withDefaultEmbeddingService() } doThrow IllegalStateException("no embedding model configured")
+        }
+        runner.withBean(Ai::class.java, { failing }).run { context ->
+            assertThat(context).hasNotFailed()
+            assertThat(context).hasSingleBean(MessageEmbedder::class.java)
         }
     }
 
