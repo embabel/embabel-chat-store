@@ -23,16 +23,41 @@ import java.time.Instant
 class SessionCursorCodecTest {
 
     @Test
-    fun `cursor round trips timestamp precision and arbitrary session IDs`() {
-        val cursor = SessionCursor(Instant.parse("2026-08-04T12:34:56.123456789Z"), "not-a-uuid/✓")
+    fun `activity cursor round trips timestamp precision and arbitrary session IDs`() {
+        val cursor = SessionCursor.LastActivity(Instant.parse("2026-08-04T12:34:56.123456789Z"), "not-a-uuid/✓")
 
-        assertEquals(cursor, SessionCursorCodec.decode(SessionCursorCodec.encode(cursor)))
+        assertEquals(
+            cursor,
+            SessionCursorCodec.decode(SessionCursorCodec.encode(cursor), SessionOrder.LAST_ACTIVITY),
+        )
+    }
+
+    @Test
+    fun `created cursor round trips arbitrary session IDs`() {
+        val cursor = SessionCursor.Created("not-a-uuid/✓")
+
+        assertEquals(cursor, SessionCursorCodec.decode(SessionCursorCodec.encode(cursor), SessionOrder.CREATED))
+    }
+
+    @Test
+    fun `a cursor is rejected when replayed against the other ordering`() {
+        val encoded = SessionCursorCodec.encode(SessionCursor.Created("01931f00-0000-7000-8000-000000000000"))
+
+        val exception = assertThrows(IllegalArgumentException::class.java) {
+            SessionCursorCodec.decode(encoded, SessionOrder.LAST_ACTIVITY)
+        }
+
+        assertEquals("Invalid session cursor", exception.message)
+        assertEquals(
+            "cursor was issued for CREATED but this request orders by LAST_ACTIVITY",
+            exception.cause?.message,
+        )
     }
 
     @Test
     fun `malformed cursors fail with a stable public error`() {
         val exception = assertThrows(IllegalArgumentException::class.java) {
-            SessionCursorCodec.decode("not a cursor")
+            SessionCursorCodec.decode("not a cursor", SessionOrder.CREATED)
         }
 
         assertEquals("Invalid session cursor", exception.message)

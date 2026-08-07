@@ -20,51 +20,67 @@ import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.util.Base64
 
-internal data class SessionCursor(
-    val lastActivityAt: Instant,
-    val sessionId: String,
-)
-
-/** Versioned binary cursor encoding; callers treat the resulting Base64URL value as opaque. */
+/**
+ * Versioned binary cursor encoding; callers treat the resulting Base64URL value as opaque.
+ *
+ * The payload carries the [SessionOrder] it was issued under. [decode] requires the caller to
+ * state the order it is about to seek on and rejects a mismatch, because the two orderings
+ * key on different properties: replaying a cursor against the wrong ordering would otherwise
+ * seek on the wrong value and silently return a wrong page rather than an error.
+ */
 internal object SessionCursorCodec {
     private const val VERSION: Byte = 1
-    private const val HEADER_SIZE = 1 + Long.SIZE_BYTES + Int.SIZE_BYTES + Int.SIZE_BYTES
     private const val MAX_SESSION_ID_BYTES = 16 * 1024
 
     fun encode(cursor: SessionCursor): String {
         val idBytes = cursor.sessionId.toByteArray(StandardCharsets.UTF_8)
         require(idBytes.size <= MAX_SESSION_ID_BYTES) { "sessionId is too large to encode in a cursor" }
-        val bytes = ByteBuffer.allocate(HEADER_SIZE + idBytes.size)
+        val timestampSize = if (cursor is SessionCursor.LastActivity) Long.SIZE_BYTES + Int.SIZE_BYTES else 0
+        val buffer = ByteBuffer.allocate(2 + timestampSize + Int.SIZE_BYTES + idBytes.size)
             .put(VERSION)
-            .putLong(cursor.lastActivityAt.epochSecond)
-            .putInt(cursor.lastActivityAt.nano)
-            .putInt(idBytes.size)
-            .put(idBytes)
-            .array()
+            .put(cursor.order.ordinal.toByte())
+        if (cursor is SessionCursor.LastActivity) {
+            buffer.putLong(cursor.lastActivityAt.epochSecond).putInt(cursor.lastActivityAt.nano)
+        }
+        val bytes = buffer.putInt(idBytes.size).put(idBytes).array()
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
     }
 
-    fun decode(encoded: String): SessionCursor {
+    fun decode(encoded: String, expectedOrder: SessionOrder): SessionCursor {
         try {
-            val bytes = Base64.getUrlDecoder().decode(encoded)
-            require(bytes.size >= HEADER_SIZE) { "cursor payload is truncated" }
-            val buffer = ByteBuffer.wrap(bytes)
+            val buffer = ByteBuffer.wrap(Base64.getUrlDecoder().decode(encoded))
+            require(buffer.remaining() >= 2) { "cursor payload is truncated" }
             require(buffer.get() == VERSION) { "unsupported cursor version" }
-            val epochSecond = buffer.long
-            val nano = buffer.int
-            require(nano in 0..999_999_999) { "invalid cursor timestamp" }
-            val idLength = buffer.int
-            require(idLength in 0..MAX_SESSION_ID_BYTES && idLength == buffer.remaining()) {
-                "invalid cursor session ID length"
+            val order = buffer.get().toInt().let { ordinal ->
+                require(ordinal in SessionOrder.entries.indices) { "unknown cursor ordering" }
+                SessionOrder.entries[ordinal]
             }
-            val idBytes = ByteArray(idLength)
-            buffer.get(idBytes)
-            val sessionId = String(idBytes, StandardCharsets.UTF_8)
-            require(sessionId.isNotEmpty()) { "cursor session ID is empty" }
-            return SessionCursor(Instant.ofEpochSecond(epochSecond, nano.toLong()), sessionId)
+            require(order == expectedOrder) {
+                "cursor was issued for $order but this request orders by $expectedOrder"
+            }
+            return when (order) {
+                SessionOrder.CREATED -> SessionCursor.Created(readSessionId(buffer))
+                SessionOrder.LAST_ACTIVITY -> {
+                    require(buffer.remaining() >= Long.SIZE_BYTES + Int.SIZE_BYTES) { "cursor payload is truncated" }
+                    val epochSecond = buffer.long
+                    val nano = buffer.int
+                    require(nano in 0..999_999_999) { "invalid cursor timestamp" }
+                    SessionCursor.LastActivity(Instant.ofEpochSecond(epochSecond, nano.toLong()), readSessionId(buffer))
+                }
+            }
         } catch (cause: Exception) {
-            if (cause is IllegalArgumentException && cause.message == "Invalid session cursor") throw cause
             throw IllegalArgumentException("Invalid session cursor", cause)
         }
+    }
+
+    private fun readSessionId(buffer: ByteBuffer): String {
+        require(buffer.remaining() >= Int.SIZE_BYTES) { "cursor payload is truncated" }
+        val idLength = buffer.int
+        require(idLength in 1..MAX_SESSION_ID_BYTES && idLength == buffer.remaining()) {
+            "invalid cursor session ID length"
+        }
+        val idBytes = ByteArray(idLength)
+        buffer.get(idBytes)
+        return String(idBytes, StandardCharsets.UTF_8)
     }
 }
