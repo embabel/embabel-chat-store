@@ -22,6 +22,7 @@ import com.embabel.chat.Message
 import com.embabel.chat.MessageRole
 import com.embabel.chat.event.MessageEvent
 import com.embabel.chat.store.embedding.MessageEmbedder
+import com.embabel.chat.store.event.MessagePersistedEvent
 import com.embabel.chat.store.event.SessionEventAwaiter
 import com.embabel.chat.store.model.AttachmentData
 import com.embabel.chat.store.model.MessageData
@@ -133,12 +134,31 @@ class StoredConversation(
      * @return the message (returned immediately, before persistence completes)
      */
     override fun addMessage(message: Message): Message {
+        addMessageWithId(message)
+        return message
+    }
+
+    /**
+     * Add a message and return the ID it is stored under, for callers that need to address it
+     * later — setting narration on it, for example.
+     *
+     * Deliberately NOT on the [com.embabel.chat.Conversation] interface, whose [addMessage]
+     * returns a [Message] and whose [Message] type carries no identity. The ID is minted here
+     * synchronously and is valid immediately, even though persistence is asynchronous; a
+     * subsequent update keyed by it will not find the message until the write lands, so prefer
+     * reacting to the PERSISTED [MessageEvent] where timing matters.
+     *
+     * @param message the message to add
+     * @param attachments files to attach; empty behaves exactly like [addMessage]
+     * @return the message ID
+     */
+    fun addMessageWithId(message: Message, attachments: List<AttachmentData> = emptyList()): String {
         val (from, to) = when (message.role) {
             MessageRole.USER -> user to agent
             MessageRole.ASSISTANT -> agent to user
             else -> null to user
         }
-        return addMessageInternal(message, from, to)
+        return addMessageInternal(message, from, to, attachments)
     }
 
     /**
@@ -159,12 +179,8 @@ class StoredConversation(
      * @return the message (returned immediately, before persistence completes)
      */
     fun addMessageWithAttachments(message: Message, attachments: List<AttachmentData>): Message {
-        val (from, to) = when (message.role) {
-            MessageRole.USER -> user to agent
-            MessageRole.ASSISTANT -> agent to user
-            else -> null to user
-        }
-        return addMessageInternal(message, from, to, attachments)
+        addMessageWithId(message, attachments)
+        return message
     }
 
     /**
@@ -187,7 +203,8 @@ class StoredConversation(
             MessageRole.ASSISTANT -> user
             else -> agent
         }
-        return addMessageInternal(message, from, to)
+        addMessageInternal(message, from, to)
+        return message
     }
 
     /**
@@ -208,7 +225,8 @@ class StoredConversation(
     ): Message {
         val fromUser = from?.toStoredUser("from")
         val toUser = to?.toStoredUser("to")
-        return addMessageInternal(message, fromUser, toUser)
+        addMessageInternal(message, fromUser, toUser)
+        return message
     }
 
     override fun last(n: Int): Conversation {
@@ -231,12 +249,13 @@ class StoredConversation(
             )
     }
 
+    /** Adds the message and returns the ID it will be stored under. */
     private fun addMessageInternal(
         message: Message,
         from: StoredUser?,
         to: StoredUser?,
         attachments: List<AttachmentData> = emptyList()
-    ): Message {
+    ): String {
         val messageData = MessageData.from(message, messageId = UUIDv7.generateString())
 
         // Generate an interim title from the first user message so the session
@@ -279,6 +298,11 @@ class StoredConversation(
                     val persistedMessage = updatedSession.messages.last().toMessage()
                     eventPublisher?.publishEvent(
                         MessageEvent.persisted(id, persistedMessage, from?.id, to?.id, title)
+                    )
+                    // Carries the message ID, which MessageEvent cannot: listeners doing
+                    // enrichment keyed by ID need to know the write has landed.
+                    eventPublisher?.publishEvent(
+                        MessagePersistedEvent(id, messageData.messageId, message.role)
                     )
                     logger.debug("Message {} persisted to session {}", messageData.messageId, id)
                 } catch (e: Exception) {
@@ -323,7 +347,7 @@ class StoredConversation(
             }
         }
 
-        return message
+        return messageData.messageId
     }
 
     /**

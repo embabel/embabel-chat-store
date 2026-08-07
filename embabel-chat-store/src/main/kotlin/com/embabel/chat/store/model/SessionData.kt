@@ -15,6 +15,7 @@
  */
 package com.embabel.chat.store.model
 
+import org.drivine.annotation.Default
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.annotation.RangeIndex
@@ -23,14 +24,18 @@ import java.time.Instant
 /**
  * Core session data stored as a Neo4j node.
  *
- * Sessions are identified by UUIDv7 which provides chronological ordering
- * when sorted lexicographically.
+ * Two orderings are supported over these properties, selected by
+ * [com.embabel.chat.store.repository.SessionOrder]: creation order via [sessionId], and
+ * most-recently-active order via [lastActivityAt] with [sessionId] as tie-breaker.
  */
 @NodeFragment(labels = ["ChatSession"])
 @RangeIndex(properties = ["lastActivityAt"])
 data class SessionData(
     /**
-     * Unique session identifier (UUIDv7 recommended).
+     * Unique session identifier. UUIDv7 is strongly recommended: it embeds its creation
+     * timestamp in the leading bits, so lexicographic order is creation order, which is what
+     * [com.embabel.chat.store.repository.SessionOrder.CREATED] paginates on. Any unique
+     * string still paginates deterministically, just not chronologically.
      */
     @NodeId val sessionId: String,
 
@@ -44,7 +49,19 @@ data class SessionData(
      */
     val createdAt: Instant,
 
-    /** Last user-visible conversation activity; used for stable session-list ordering. */
+    /**
+     * Last user-visible conversation activity, advanced only when a message is added —
+     * enrichment such as narration deliberately does not reorder sessions.
+     *
+     * [Default] makes a session stored before this property existed hydrate as [createdAt]
+     * rather than failing to load, so old data stays readable and orders sensibly under
+     * [com.embabel.chat.store.repository.SessionOrder.CREATED] with no migration at all.
+     * [com.embabel.chat.store.repository.SessionOrder.LAST_ACTIVITY] additionally needs the
+     * value materialised in the graph — a null never satisfies a keyset comparison — so
+     * [com.embabel.chat.store.repository.SessionActivityMigration] still backfills it, but as
+     * a correctness step for that one ordering rather than a prerequisite for reading at all.
+     */
+    @Default
     val lastActivityAt: Instant = createdAt,
 
     /**

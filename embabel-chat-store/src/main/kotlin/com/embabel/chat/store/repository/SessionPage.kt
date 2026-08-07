@@ -15,25 +15,12 @@
  */
 package com.embabel.chat.store.repository
 
-/** Request for one cursor-based page of sessions. */
-data class SessionPageRequest(
-    val pageSize: Int = DEFAULT_PAGE_SIZE,
-    val cursor: String? = null,
-) {
-    init {
-        require(pageSize in 1..MAX_PAGE_SIZE) {
-            "pageSize must be between 1 and $MAX_PAGE_SIZE, was $pageSize"
-        }
-        require(cursor == null || cursor.isNotBlank()) { "cursor must be null or non-blank" }
-    }
-
-    companion object {
-        const val DEFAULT_PAGE_SIZE = 20
-        const val MAX_PAGE_SIZE = 100
-    }
-}
-
-/** A page of sessions and the opaque cursor for the following page, if one exists. */
+/**
+ * A page of sessions and the opaque cursor for the following page.
+ *
+ * [nextCursor] is null when this is the last page. It encodes the ordering that produced it,
+ * so it must be passed back with the same [SessionOrder].
+ */
 data class SessionPage<T>(
     val items: List<T>,
     val nextCursor: String?,

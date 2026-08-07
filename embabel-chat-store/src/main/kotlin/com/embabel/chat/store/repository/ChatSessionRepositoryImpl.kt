@@ -135,34 +135,33 @@ open class ChatSessionRepositoryImpl(
     }
 
     @Transactional(readOnly = true)
-    override fun listSessionsForUser(userId: String): List<StoredSession> {
-        val lastActivityOrder = StoredSessionQueryDsl.INSTANCE.session.lastActivityAt.desc()
-        val sessionIdOrder = StoredSessionQueryDsl.INSTANCE.session.sessionId.desc()
+    override fun listSessionsForUser(userId: String, order: SessionOrder): List<StoredSession> {
+        val orders = storedSessionOrders(order)
         return graphObjectManager.loadAll<StoredSession> {
             where {
                 owner.id eq userId
             }
             orderBy {
-                registerOrder(lastActivityOrder)
-                registerOrder(sessionIdOrder)
+                orders.forEach { registerOrder(it) }
             }
         }
     }
 
     @Transactional(readOnly = true)
     override fun listSessionsForUser(userId: String, page: SessionPageRequest): SessionPage<StoredSession> {
-        val lastActivityOrder = StoredSessionQueryDsl.INSTANCE.session.lastActivityAt.desc()
-        val sessionIdOrder = StoredSessionQueryDsl.INSTANCE.session.sessionId.desc()
+        val orders = storedSessionOrders(page.order)
+        val cursor = page.cursor?.let { SessionCursorCodec.decode(it, page.order) }
         return loadSessionPage(page, loader = {
             graphObjectManager.loadAll<StoredSession> {
                 where { owner.id eq userId }
-                orderBy {
-                    registerOrder(lastActivityOrder)
-                    registerOrder(sessionIdOrder)
-                }
-                page.cursor?.let { encoded ->
-                    val cursor = SessionCursorCodec.decode(encoded)
-                    seek {
+                orderBy { orders.forEach { registerOrder(it) } }
+                when (cursor) {
+                    null -> Unit
+                    is SessionCursor.Created -> seek {
+                        query.session.sessionId after cursor.sessionId
+                    }
+
+                    is SessionCursor.LastActivity -> seek {
                         query.session.lastActivityAt after cursor.lastActivityAt
                         query.session.sessionId after cursor.sessionId
                     }
@@ -173,9 +172,8 @@ open class ChatSessionRepositoryImpl(
     }
 
     @Transactional(readOnly = true)
-    override fun listSessionSummariesForUser(userId: String): List<SessionSummary> {
-        val lastActivityOrder = SessionSummaryQueryDsl.INSTANCE.session.lastActivityAt.desc()
-        val sessionIdOrder = SessionSummaryQueryDsl.INSTANCE.session.sessionId.desc()
+    override fun listSessionSummariesForUser(userId: String, order: SessionOrder): List<SessionSummary> {
+        val orders = sessionSummaryOrders(order)
         // SessionSummary folds the message count into the query (via @Count), so this
         // returns one flat row per session — no message bodies cross the wire.
         return graphObjectManager.loadAll<SessionSummary> {
@@ -183,8 +181,7 @@ open class ChatSessionRepositoryImpl(
                 owner.id eq userId
             }
             orderBy {
-                registerOrder(lastActivityOrder)
-                registerOrder(sessionIdOrder)
+                orders.forEach { registerOrder(it) }
             }
         }
     }
@@ -194,18 +191,19 @@ open class ChatSessionRepositoryImpl(
         userId: String,
         page: SessionPageRequest,
     ): SessionPage<SessionSummary> {
-        val lastActivityOrder = SessionSummaryQueryDsl.INSTANCE.session.lastActivityAt.desc()
-        val sessionIdOrder = SessionSummaryQueryDsl.INSTANCE.session.sessionId.desc()
+        val orders = sessionSummaryOrders(page.order)
+        val cursor = page.cursor?.let { SessionCursorCodec.decode(it, page.order) }
         return loadSessionPage(page, loader = {
             graphObjectManager.loadAll<SessionSummary> {
                 where { owner.id eq userId }
-                orderBy {
-                    registerOrder(lastActivityOrder)
-                    registerOrder(sessionIdOrder)
-                }
-                page.cursor?.let { encoded ->
-                    val cursor = SessionCursorCodec.decode(encoded)
-                    seek {
+                orderBy { orders.forEach { registerOrder(it) } }
+                when (cursor) {
+                    null -> Unit
+                    is SessionCursor.Created -> seek {
+                        query.session.sessionId after cursor.sessionId
+                    }
+
+                    is SessionCursor.LastActivity -> seek {
                         query.session.lastActivityAt after cursor.lastActivityAt
                         query.session.sessionId after cursor.sessionId
                     }
@@ -213,6 +211,27 @@ open class ChatSessionRepositoryImpl(
                 limit(page.pageSize + 1)
             }
         }, sessionData = { it.session })
+    }
+
+    /**
+     * Sort keys for [StoredSession] in the requested order. [SessionOrder.CREATED] needs no
+     * tie-breaker: the session ID is unique, so it is already a total order.
+     */
+    private fun storedSessionOrders(order: SessionOrder): List<OrderSpec> {
+        val session = StoredSessionQueryDsl.INSTANCE.session
+        return when (order) {
+            SessionOrder.CREATED -> listOf(session.sessionId.desc())
+            SessionOrder.LAST_ACTIVITY -> listOf(session.lastActivityAt.desc(), session.sessionId.desc())
+        }
+    }
+
+    /** Sort keys for [SessionSummary]; see [storedSessionOrders]. */
+    private fun sessionSummaryOrders(order: SessionOrder): List<OrderSpec> {
+        val session = SessionSummaryQueryDsl.INSTANCE.session
+        return when (order) {
+            SessionOrder.CREATED -> listOf(session.sessionId.desc())
+            SessionOrder.LAST_ACTIVITY -> listOf(session.lastActivityAt.desc(), session.sessionId.desc())
+        }
     }
 
     @Transactional(readOnly = true)
@@ -257,8 +276,11 @@ open class ChatSessionRepositoryImpl(
             messageData.messageId, sessionId, attachments.size,
         )
 
-        // Verify session exists — MERGE on SessionRef would silently create a bare node
-        if (graphObjectManager.load<SessionRef>(sessionId) == null) {
+        // Verify the session exists and advance its activity in a single statement — MERGE on
+        // SessionRef would silently create a bare node. Folding the two saves a round trip on
+        // the hottest write path, and both are writes in this transaction, so a failure below
+        // rolls the timestamp back along with the message.
+        if (!touchSession(sessionId, clock.instant())) {
             throw IllegalArgumentException("Session not found: $sessionId")
         }
 
@@ -272,7 +294,6 @@ open class ChatSessionRepositoryImpl(
             )
         )
         graphObjectManager.save(newMessage, CascadeType.PRESERVE)
-        advanceActivity(sessionId, clock.instant())
 
         return findBySessionId(sessionId).orElseThrow {
             IllegalStateException("Session not found after adding message: $sessionId")
@@ -292,6 +313,33 @@ open class ChatSessionRepositoryImpl(
         return graphObjectManager.load<SessionParticipants>(sessionId)?.participants ?: emptyList()
     }
 
+    @Transactional
+    override fun updateMessageNarration(sessionId: String, messageId: String, narration: String): Boolean {
+        val updated = persistenceManager.getOne(
+            QuerySpecification
+                .withStatement(
+                    """
+                    MATCH (:ChatSession {sessionId: ${'$'}sessionId})
+                          -[:HAS_MESSAGE]->(message:StoredMessage {messageId: ${'$'}messageId})
+                    SET message.narration = ${'$'}narration
+                    RETURN count(message) AS updated
+                    """.trimIndent()
+                )
+                .bind(mapOf("sessionId" to sessionId, "messageId" to messageId, "narration" to narration))
+                .map { (it as Number).toLong() }
+        )
+        if (updated == 0L) {
+            logger.warn("Cannot update narration: message {} not found in session {}", messageId, sessionId)
+            return false
+        }
+        logger.debug("Updated narration for message {} in session {}", messageId, sessionId)
+        return true
+    }
+
+    @Deprecated(
+        "Guesses which message to narrate; use the messageId-keyed overload",
+        ReplaceWith("updateMessageNarration(conversationId, messageId, narration)"),
+    )
     @Transactional
     override fun updateMessageNarration(conversationId: String, narration: String) {
         // Client-side filtering required: the DSL WHERE clause filters which sessions match,
@@ -320,20 +368,27 @@ open class ChatSessionRepositoryImpl(
         graphObjectManager.deleteAll<StoredSession> { }
     }
 
-    private fun advanceActivity(sessionId: String, activityAt: Instant) {
-        persistenceManager.execute(
-            QuerySpecification
-                .withStatement(
-                    """
-                    MATCH (session:ChatSession {sessionId: ${'$'}sessionId})
-                    SET session.lastActivityAt = CASE
-                        WHEN session.lastActivityAt IS NULL OR session.lastActivityAt < ${'$'}activityAt
-                        THEN ${'$'}activityAt ELSE session.lastActivityAt END
-                    """.trimIndent()
-                )
-                .bind(mapOf("sessionId" to sessionId, "activityAt" to activityAt))
-        )
-    }
+    /**
+     * Advance the session's activity timestamp, returning whether the session exists.
+     *
+     * The timestamp only ever moves forward, so clock skew between application instances can
+     * leave the ordering slightly stale but can never move a session backwards — which would
+     * otherwise let a keyset walk skip or repeat it.
+     */
+    private fun touchSession(sessionId: String, activityAt: Instant): Boolean = persistenceManager.getOne(
+        QuerySpecification
+            .withStatement(
+                """
+                MATCH (session:ChatSession {sessionId: ${'$'}sessionId})
+                SET session.lastActivityAt = CASE
+                    WHEN session.lastActivityAt IS NULL OR session.lastActivityAt < ${'$'}activityAt
+                    THEN ${'$'}activityAt ELSE session.lastActivityAt END
+                RETURN count(session) AS found
+                """.trimIndent()
+            )
+            .bind(mapOf("sessionId" to sessionId, "activityAt" to activityAt))
+            .map { (it as Number).toLong() }
+    ) > 0
 
     private fun <T> loadSessionPage(
         page: SessionPageRequest,
@@ -344,7 +399,7 @@ open class ChatSessionRepositoryImpl(
         val items = loaded.take(page.pageSize)
         val nextCursor = if (loaded.size > page.pageSize) {
             items.lastOrNull()?.let(sessionData)?.let {
-                SessionCursorCodec.encode(SessionCursor(it.lastActivityAt, it.sessionId))
+                SessionCursorCodec.encode(SessionPaging.cursorFor(page.order, it))
             }
         } else null
         return SessionPage(items, nextCursor)

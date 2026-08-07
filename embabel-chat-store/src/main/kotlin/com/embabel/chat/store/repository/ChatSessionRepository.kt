@@ -79,17 +79,28 @@ interface ChatSessionRepository {
      * List all sessions owned by a user.
      *
      * @param userId the owner's user ID
+     * @param order the sort order; defaults to newest-created first
      * @return list of sessions owned by the user
      */
-    fun listSessionsForUser(userId: String): List<StoredSession>
+    fun listSessionsForUser(
+        userId: String,
+        order: SessionOrder = SessionOrder.CREATED,
+    ): List<StoredSession>
 
     /**
-     * List sessions in descending `(lastActivityAt, sessionId)` order using an opaque keyset cursor.
-     * The session ID is only a unique tie-breaker: arbitrary strings remain deterministic, while
-     * UUIDv7 is still recommended by the creation API. Concurrent activity may move a session ahead
-     * of an already-issued cursor; this method does not provide snapshot isolation across requests.
+     * List one page of sessions in [SessionPageRequest.order], using an opaque keyset cursor.
+     *
+     * Under [SessionOrder.CREATED] the keyset is `sessionId` descending, which is creation order
+     * for UUIDv7 IDs; under [SessionOrder.LAST_ACTIVITY] it is `(lastActivityAt, sessionId)`
+     * descending, with the ID acting only as a unique tie-breaker. A cursor is bound to the order
+     * that issued it and is rejected if replayed against the other.
+     *
+     * There is no snapshot isolation across requests: under [SessionOrder.LAST_ACTIVITY],
+     * concurrent activity may move a session ahead of an already-issued cursor, so it can be seen
+     * twice or missed. [SessionOrder.CREATED] keys on an immutable value and so is stable.
      */
-    fun listSessionsForUser(userId: String, page: SessionPageRequest): SessionPage<StoredSession>
+    fun listSessionsForUser(userId: String, page: SessionPageRequest): SessionPage<StoredSession> =
+        SessionPaging.inMemory(listSessionsForUser(userId, page.order), page) { it.session }
 
     /**
      * List a user's sessions as lightweight summaries — owner plus a message count
@@ -97,14 +108,19 @@ interface ChatSessionRepository {
      * UIs that show a "N messages" badge but not the conversation bodies.
      *
      * @param userId the owner's user ID
+     * @param order the sort order; defaults to newest-created first
      * @return one [SessionSummary] per owned session
      */
-    fun listSessionSummariesForUser(userId: String): List<SessionSummary>
+    fun listSessionSummariesForUser(
+        userId: String,
+        order: SessionOrder = SessionOrder.CREATED,
+    ): List<SessionSummary>
 
     /**
      * Lightweight equivalent of [listSessionsForUser] with identical ordering and cursor semantics.
      */
-    fun listSessionSummariesForUser(userId: String, page: SessionPageRequest): SessionPage<SessionSummary>
+    fun listSessionSummariesForUser(userId: String, page: SessionPageRequest): SessionPage<SessionSummary> =
+        SessionPaging.inMemory(listSessionSummariesForUser(userId, page.order), page) { it.session }
 
     /**
      * Count the sessions owned by a user, without loading them.
@@ -170,12 +186,32 @@ interface ChatSessionRepository {
     // ==================== Message Updates ====================
 
     /**
+     * Set the narration text on a specific message.
+     *
+     * Narration is enrichment, not activity: it deliberately does not advance the session's
+     * `lastActivityAt`, so adding narration never reorders a session in a listing ordered by
+     * [SessionOrder.LAST_ACTIVITY], and never reorders the message within its thread.
+     *
+     * @param sessionId the session owning the message
+     * @param messageId the message to narrate, as minted when it was added
+     * @param narration the TTS-friendly narration text
+     * @return true if the message was found and updated, false otherwise
+     */
+    fun updateMessageNarration(sessionId: String, messageId: String, narration: String): Boolean
+
+    /**
      * Update the narration text for a message.
      * Finds the latest assistant message without narration in the given session.
      *
      * @param conversationId the session/conversation ID
      * @param narration the TTS-friendly narration text
      */
+    @Deprecated(
+        "Guesses which message to narrate, and races the asynchronous message write: a " +
+            "narration arriving before its message is persisted attaches to the previous " +
+            "un-narrated assistant message. Use the messageId-keyed overload.",
+        ReplaceWith("updateMessageNarration(conversationId, messageId, narration)"),
+    )
     fun updateMessageNarration(conversationId: String, narration: String)
 
     // ==================== Bulk Operations ====================

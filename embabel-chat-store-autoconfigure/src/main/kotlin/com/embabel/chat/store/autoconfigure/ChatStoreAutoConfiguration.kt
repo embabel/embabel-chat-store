@@ -28,6 +28,7 @@ import com.embabel.chat.store.embedding.RoleFilteringMessageEmbedder
 import com.embabel.chat.store.event.SessionEventAwaiter
 import com.embabel.chat.store.repository.ChatSessionRepository
 import com.embabel.chat.store.repository.SessionActivityMigration
+import com.embabel.chat.store.repository.SessionOrder
 import com.embabel.chat.support.InMemoryConversationFactory
 import org.drivine.manager.PersistenceManager
 import org.drivine.schema.RangeIndexSpec
@@ -36,6 +37,7 @@ import org.drivine.schema.SimilarityFunction
 import org.drivine.schema.UniquenessConstraintSpec
 import org.drivine.schema.VectorIndexSpec
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.ApplicationRunner
 import org.springframework.boot.autoconfigure.AutoConfiguration
@@ -129,13 +131,29 @@ open class ChatStoreAutoConfiguration {
         RangeIndexSpec(label = "ChatSession", property = "lastActivityAt"),
     )
 
-    /** Backfills activity for installations that predate most-recently-active ordering. */
+    /**
+     * Backfills activity for installations that predate most-recently-active ordering.
+     *
+     * Resolved through an [ObjectProvider] rather than `@ConditionalOnBean`: the condition is
+     * evaluated at auto-configuration parse time, so an application that registers its
+     * [PersistenceManager] from another auto-configuration or a `BeanFactoryPostProcessor`
+     * would silently get no runner — and un-backfilled sessions then vanish from every page
+     * after the first under [SessionOrder.LAST_ACTIVITY]. Absence is logged loudly instead.
+     */
     @Bean
-    @ConditionalOnBean(PersistenceManager::class)
     open fun chatStoreSessionActivityMigration(
-        persistenceManager: PersistenceManager,
+        persistenceManagers: ObjectProvider<PersistenceManager>,
     ): ApplicationRunner = ApplicationRunner {
-        SessionActivityMigration(persistenceManager).migrate()
+        val persistenceManager = persistenceManagers.getIfAvailable()
+        if (persistenceManager == null) {
+            logger.warn(
+                "No PersistenceManager bean: skipping the session activity backfill. Sessions " +
+                    "created before lastActivityAt existed will be missing from paged listings " +
+                    "ordered by ${SessionOrder.LAST_ACTIVITY}."
+            )
+        } else {
+            SessionActivityMigration(persistenceManager).migrate()
+        }
     }
 
     /**

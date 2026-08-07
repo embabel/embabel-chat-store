@@ -20,6 +20,7 @@ import com.embabel.chat.store.TestApplication
 import com.embabel.chat.store.model.AttachmentData
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.TestSessionUser
+import com.embabel.chat.store.util.UUIDv7
 import org.drivine.manager.GraphObjectManager
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
@@ -101,14 +102,17 @@ class ChatSessionRepositoryImplTest {
             setActivity(id, activity)
         }
 
-        val first = chatSessionRepository.listSessionsForUser(testUser.id, SessionPageRequest(pageSize = 2))
+        val first = chatSessionRepository.listSessionsForUser(
+            testUser.id,
+            SessionPageRequest(pageSize = 2, order = SessionOrder.LAST_ACTIVITY),
+        )
         val second = chatSessionRepository.listSessionsForUser(
             testUser.id,
-            SessionPageRequest(pageSize = 2, cursor = first.nextCursor),
+            SessionPageRequest(pageSize = 2, cursor = first.nextCursor, order = SessionOrder.LAST_ACTIVITY),
         )
         val third = chatSessionRepository.listSessionsForUser(
             testUser.id,
-            SessionPageRequest(pageSize = 2, cursor = second.nextCursor),
+            SessionPageRequest(pageSize = 2, cursor = second.nextCursor, order = SessionOrder.LAST_ACTIVITY),
         )
 
         assertEquals(listOf("session-c", "session-b"), first.items.map { it.session.sessionId })
@@ -132,16 +136,89 @@ class ChatSessionRepositoryImplTest {
 
         val first = chatSessionRepository.listSessionSummariesForUser(
             testUser.id,
-            SessionPageRequest(pageSize = 1),
+            SessionPageRequest(pageSize = 1, order = SessionOrder.LAST_ACTIVITY),
         )
         val second = chatSessionRepository.listSessionSummariesForUser(
             testUser.id,
-            SessionPageRequest(pageSize = 1, cursor = first.nextCursor),
+            SessionPageRequest(pageSize = 1, cursor = first.nextCursor, order = SessionOrder.LAST_ACTIVITY),
         )
 
         assertEquals(listOf("mine-new"), first.items.map { it.session.sessionId })
         assertEquals(listOf("mine-old"), second.items.map { it.session.sessionId })
         assertNull(second.nextCursor)
+    }
+
+    @Test
+    fun `pages by creation order on session ID by default, ignoring activity`() {
+        val ids = List(5) { UUIDv7.generateString() }
+        ids.forEach { chatSessionRepository.createSession(it, testUser, it) }
+        // Activity deliberately contradicts creation order: the default must not follow it.
+        setActivity(ids[0], Instant.parse("2026-01-01T00:00:09Z"))
+        setActivity(ids[4], Instant.parse("2026-01-01T00:00:00Z"))
+
+        val first = chatSessionRepository.listSessionsForUser(testUser.id, SessionPageRequest(pageSize = 2))
+        val second = chatSessionRepository.listSessionsForUser(
+            testUser.id,
+            SessionPageRequest(pageSize = 2, cursor = first.nextCursor),
+        )
+        val third = chatSessionRepository.listSessionsForUser(
+            testUser.id,
+            SessionPageRequest(pageSize = 2, cursor = second.nextCursor),
+        )
+
+        val newestFirst = ids.sortedDescending()
+        assertEquals(newestFirst.subList(0, 2), first.items.map { it.session.sessionId })
+        assertEquals(newestFirst.subList(2, 4), second.items.map { it.session.sessionId })
+        assertEquals(newestFirst.subList(4, 5), third.items.map { it.session.sessionId })
+        assertNull(third.nextCursor)
+    }
+
+    @Test
+    fun `a session with no activity timestamp still reads, defaulting to its creation time`() {
+        val sessionId = UUIDv7.generateString()
+        val session = chatSessionRepository.createSession(sessionId, testUser)
+        persistenceManager.execute(
+            QuerySpecification.withStatement(
+                "MATCH (s:ChatSession {sessionId: \$id}) REMOVE s.lastActivityAt"
+            ).bind(mapOf("id" to sessionId))
+        )
+
+        // @Default on SessionData.lastActivityAt: a node predating the property hydrates as
+        // createdAt rather than failing, so old data needs no migration merely to be read.
+        val page = chatSessionRepository.listSessionsForUser(testUser.id, SessionPageRequest(pageSize = 10))
+
+        val loaded = page.items.single { it.session.sessionId == sessionId }
+        assertEquals(session.session.createdAt, loaded.session.lastActivityAt)
+    }
+
+    @Test
+    fun `the migration restores readability of a session with no activity timestamp`() {
+        val sessionId = UUIDv7.generateString()
+        chatSessionRepository.createSession(sessionId, testUser)
+        persistenceManager.execute(
+            QuerySpecification.withStatement(
+                "MATCH (s:ChatSession {sessionId: \$id}) SET s.lastActivityAt = null"
+            ).bind(mapOf("id" to sessionId))
+        )
+
+        SessionActivityMigration(persistenceManager).migrate()
+
+        val page = chatSessionRepository.listSessionsForUser(testUser.id, SessionPageRequest(pageSize = 10))
+        assertTrue(page.items.any { it.session.sessionId == sessionId })
+    }
+
+    @Test
+    fun `a cursor issued for one ordering is rejected by the other`() {
+        chatSessionRepository.createSession(UUIDv7.generateString(), testUser)
+        chatSessionRepository.createSession(UUIDv7.generateString(), testUser)
+        val createdPage = chatSessionRepository.listSessionsForUser(testUser.id, SessionPageRequest(pageSize = 1))
+
+        assertThrows(IllegalArgumentException::class.java) {
+            chatSessionRepository.listSessionsForUser(
+                testUser.id,
+                SessionPageRequest(pageSize = 1, cursor = createdPage.nextCursor, order = SessionOrder.LAST_ACTIVITY),
+            )
+        }
     }
 
     @Test
@@ -532,6 +609,49 @@ class ChatSessionRepositoryImplTest {
                 .bind(mapOf("id" to id))
                 .transform(Int::class.java)
         )
+
+    @Test
+    fun `narration targets the given message and does not advance activity`() {
+        val sessionId = UUIDv7.generateString()
+        chatSessionRepository.createSession(sessionId, testUser)
+        val first = UUIDv7.generateString()
+        val second = UUIDv7.generateString()
+        chatSessionRepository.addMessage(
+            sessionId,
+            MessageData(first, MessageRole.ASSISTANT, "first", Instant.parse("2026-01-01T00:00:00Z")),
+        )
+        chatSessionRepository.addMessage(
+            sessionId,
+            MessageData(second, MessageRole.ASSISTANT, "second", Instant.parse("2026-01-01T00:00:01Z")),
+        )
+        val activityBefore = chatSessionRepository.findBySessionId(sessionId).get().session.lastActivityAt
+
+        // The older message, which the previous "latest un-narrated assistant" heuristic
+        // could never have reached.
+        assertTrue(chatSessionRepository.updateMessageNarration(sessionId, first, "spoken form"))
+
+        val messages = chatSessionRepository.getMessages(sessionId).associateBy { it.messageId }
+        assertEquals("spoken form", messages[first]?.narration)
+        assertNull(messages[second]?.narration)
+        assertEquals(
+            activityBefore,
+            chatSessionRepository.findBySessionId(sessionId).get().session.lastActivityAt,
+            "narration is enrichment, not activity",
+        )
+    }
+
+    @Test
+    fun `narration reports a miss rather than narrating the wrong message`() {
+        val sessionId = UUIDv7.generateString()
+        chatSessionRepository.createSession(sessionId, testUser)
+        chatSessionRepository.addMessage(
+            sessionId,
+            MessageData(UUIDv7.generateString(), MessageRole.ASSISTANT, "only", Instant.parse("2026-01-01T00:00:00Z")),
+        )
+
+        assertFalse(chatSessionRepository.updateMessageNarration(sessionId, UUIDv7.generateString(), "nope"))
+        assertTrue(chatSessionRepository.getMessages(sessionId).all { it.narration == null })
+    }
 
     private fun setActivity(sessionId: String, activityAt: Instant) {
         persistenceManager.execute(

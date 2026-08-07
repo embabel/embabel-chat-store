@@ -140,6 +140,92 @@ Planned support for:
 - Agent-to-agent communication patterns
 - Broadcast messages
 
+## Sorting and Pagination
+
+### Two orderings
+
+Session listings support two orderings, selected with `SessionOrder`:
+
+| `SessionOrder`  | Keyset                          | Meaning                        |
+|-----------------|---------------------------------|--------------------------------|
+| `CREATED`       | `sessionId`                     | Newest-created first (default) |
+| `LAST_ACTIVITY` | `(lastActivityAt, sessionId)`   | Most recently active first     |
+
+`CREATED` keys on the session ID alone. Session IDs are UUIDv7, which embeds a millisecond
+timestamp in the leading 48 bits, and the canonical string form is big-endian hex — so
+lexicographic comparison *is* chronological comparison. The ID is unique, so this is already
+a total order and needs no tie-breaker, and it is served by the index backing the `sessionId`
+uniqueness constraint. Two sessions created in the same millisecond order by the random bits
+rather than by true creation time: arbitrary, but stable.
+
+`LAST_ACTIVITY` orders by `lastActivityAt` descending, with `sessionId` descending purely as
+a tie-breaker — the ID is not the primary sort key here.
+
+Message order *within* a thread is always by `messageId` and is not configurable. Since
+message IDs are also UUIDv7, a thread always reads in the order it happened.
+
+### What counts as activity
+
+`lastActivityAt` advances **only when a message is added**. It is deliberately not touched by:
+
+- narration (`updateMessageNarration`)
+- title generation or renaming
+- any other enrichment of an existing message
+
+Editing or annotating a message should not jump its session to the top of a list, any more
+than it should move the message within its thread. The timestamp is also monotonic — it only
+ever moves forward — so clock skew between application instances can leave ordering slightly
+stale but can never move a session backwards, which would let a keyset walk skip or repeat it.
+
+### Paging
+
+Paging is keyset-based, not offset-based, so page *n* costs the same as page 1:
+
+```kotlin
+var cursor: String? = null
+do {
+    val page = repository.listSessionsForUser(
+        userId,
+        SessionPageRequest(pageSize = 20, cursor = cursor, order = SessionOrder.CREATED),
+    )
+    page.items.forEach { render(it) }
+    cursor = page.nextCursor
+} while (cursor != null)
+```
+
+`nextCursor` is null on the last page. Use `listSessionSummariesForUser` for the same paging
+over lightweight summaries — owner plus a message count computed in the query, without
+loading message bodies.
+
+Cursors are **opaque**: a versioned, Base64URL-encoded binary payload. Do not parse or
+construct them. Each cursor also records the `SessionOrder` that issued it, and is rejected
+if replayed against the other ordering — the two key on different properties, so silently
+seeking on the wrong one would return a plausible but wrong page.
+
+There is no snapshot isolation across requests. Under `LAST_ACTIVITY`, a session that becomes
+active mid-walk can move ahead of a cursor already issued and so be seen twice or missed.
+`CREATED` keys on an immutable value and does not have this property.
+
+### Upgrading from before `lastActivityAt`
+
+`SessionData.lastActivityAt` carries Drivine's `@Default`, so a session stored before the
+property existed hydrates as its `createdAt` instead of failing to load. Old data therefore
+stays readable with no migration, and sorts sensibly under `CREATED` — which is another reason
+that is the default ordering.
+
+`LAST_ACTIVITY` needs more: a keyset comparison is never satisfied by a value that is absent in
+the graph, so a session whose property is only defaulted client-side would still drop out of
+every page after the first. `SessionActivityMigration` materialises it, and the
+auto-configuration runs it on startup. It works in bounded batches (the un-backfilled set
+cannot use the range index, since Neo4j does not index nulls), coalesces to an epoch floor so
+sessions with neither messages nor a `createdAt` still converge, and records a marker node so
+later boots cost a single lookup rather than a full label scan. Any session that receives a
+message also repairs itself, since the write advances `lastActivityAt` when it is missing.
+
+So the backfill is a correctness step for one ordering, not a prerequisite for reading. If no
+`PersistenceManager` bean is present it cannot run, and the auto-configuration logs a warning
+saying so; `CREATED` is unaffected either way.
+
 ## Auto Title Generation
 
 Provide a `TitleGenerator` to automatically generate session titles:
