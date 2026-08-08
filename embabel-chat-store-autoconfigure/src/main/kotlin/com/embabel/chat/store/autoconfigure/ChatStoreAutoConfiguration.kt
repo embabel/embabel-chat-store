@@ -16,6 +16,7 @@
 package com.embabel.chat.store.autoconfigure
 
 import com.embabel.agent.api.common.Ai
+import com.embabel.common.ai.model.EmbeddingService
 import com.embabel.chat.ConversationFactory
 import com.embabel.chat.ConversationFactoryProvider
 import com.embabel.chat.MapConversationFactoryProvider
@@ -108,19 +109,43 @@ open class ChatStoreAutoConfiguration {
      *
      * Apps can override by defining their own [MessageEmbedder] bean (for example,
      * to embed all roles, or to use a different embedding service per session).
+     *
+     * The embedding service is resolved per call rather than here, so that a host with no
+     * embedding model configured yet still gets a context — see [LazyEmbeddingService].
      */
     @Bean
     @ConditionalOnMissingBean(MessageEmbedder::class)
     @ConditionalOnBean(Ai::class)
-    open fun messageEmbedder(ai: Ai): MessageEmbedder = RoleFilteringMessageEmbedder(
-        delegate = DefaultMessageEmbedder(ai.withDefaultEmbeddingService())
+    open fun messageEmbedder(
+        ai: Ai,
+        embeddingServices: ObjectProvider<EmbeddingService>,
+    ): MessageEmbedder = RoleFilteringMessageEmbedder(
+        delegate = DefaultMessageEmbedder(LazyEmbeddingService { embeddingService(ai, embeddingServices) })
     )
+
+    /**
+     * The application's own [EmbeddingService] bean where there is an unambiguous one
+     * (a `@Primary` bean counts), otherwise the platform default.
+     *
+     * Preferring the bean matters for a host that can start with NO embedding model
+     * configured — one whose provider key arrives at first run rather than at boot. Such a
+     * host registers an embedding service that reports its own absence and can be switched
+     * on later, whereas `ai.withDefaultEmbeddingService()` resolves the default eagerly and
+     * throws when no model is registered, taking the application context down with it.
+     */
+    private fun embeddingService(ai: Ai, embeddingServices: ObjectProvider<EmbeddingService>): EmbeddingService =
+        embeddingServices.getIfUnique() ?: ai.withDefaultEmbeddingService()
 
     /**
      * Declares the chat-store uniqueness constraints — one per node-identity property.
      * Drivine's [org.drivine.schema.SchemaManager] (registered by the Drivine starter)
      * ensures every [SchemaCatalog] bean idempotently on startup, so this needs no
      * runner of its own. Enforcement is governed by `drivine.schema.enabled` (default true).
+     *
+     * Owned separately from the vector catalog: catalogs sharing an owner are merged, and
+     * their versions with them, so an unowned constraint catalog would be versioned by the
+     * embedding model and would drag the model version to null whenever the vector catalog
+     * is skipped.
      */
     @Bean
     open fun chatStoreConstraintSchema(): SchemaCatalog = SchemaCatalog.of(
@@ -129,7 +154,7 @@ open class ChatStoreAutoConfiguration {
         UniquenessConstraintSpec(label = "User", property = "id"),
         UniquenessConstraintSpec(label = "Attachment", property = "attachmentId"),
         RangeIndexSpec(label = "ChatSession", property = "lastActivityAt"),
-    )
+    ).named(CONSTRAINT_SCHEMA_OWNER)
 
     /**
      * Backfills activity for installations that predate most-recently-active ordering.
@@ -178,18 +203,41 @@ open class ChatStoreAutoConfiguration {
     open fun chatStoreVectorIndexSchema(
         ai: Ai,
         properties: ChatStoreProperties,
+        embeddingServices: ObjectProvider<EmbeddingService>,
     ): SchemaCatalog {
-        val embeddingService = ai.withDefaultEmbeddingService()
+        // A vector index is created AT the embedding model's dimension, so with no model
+        // there is no dimension to create it at. Register nothing rather than guess: an
+        // index at the wrong dimension is worse than none, because writes to it succeed.
+        // The catalog is rebuilt on the next boot, by which time a model configured at
+        // first run is registered. An absent-tolerant service may signal absence either by
+        // throwing or by reporting no dimensions, so both are treated as "no model".
+        val (dimensions, modelName) = runCatching {
+            val es = embeddingService(ai, embeddingServices)
+            val dimensions = es.dimensions
+            require(dimensions > 0) { "embedding service reports $dimensions dimensions" }
+            dimensions to es.name
+        }.getOrElse {
+            logger.warn("Skipping chat-message vector index schema: no embedding model ({})", it.message, it)
+            return SchemaCatalog.of().named(VECTOR_SCHEMA_OWNER)
+        }
         val vi = properties.vectorIndex
         val spec = VectorIndexSpec(
             label = vi.label,
             property = vi.property,
-            dimensions = embeddingService.dimensions,
+            dimensions = dimensions,
             similarity = SimilarityFunction.valueOf(vi.similarityFunction.uppercase()),
             name = vi.name,
         )
-        logger.info("Registering chat-message vector index schema: {} (model={})", spec, embeddingService.name)
-        return SchemaCatalog.of(spec).withVersion(embeddingService.name)
+        logger.info("Registering chat-message vector index schema: {} (model={})", spec, modelName)
+        return SchemaCatalog.of(spec).named(VECTOR_SCHEMA_OWNER).withVersion(modelName)
+    }
+
+    companion object {
+        /** Drivine schema owner for the chat-store constraints. */
+        const val CONSTRAINT_SCHEMA_OWNER = "embabel-chat-store"
+
+        /** Drivine schema owner for the chat-message vector index, versioned by embedding model. */
+        const val VECTOR_SCHEMA_OWNER = "embabel-chat-store-vector"
     }
 
     /**
