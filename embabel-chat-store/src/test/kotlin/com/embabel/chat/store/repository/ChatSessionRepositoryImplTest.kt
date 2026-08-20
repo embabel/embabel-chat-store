@@ -18,6 +18,7 @@ package com.embabel.chat.store.repository
 import com.embabel.chat.MessageRole
 import com.embabel.chat.store.TestApplication
 import com.embabel.chat.store.model.AttachmentData
+import com.embabel.chat.store.model.AssetData
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.TestSessionUser
 import com.embabel.chat.store.util.UUIDv7
@@ -888,6 +889,39 @@ class ChatSessionRepositoryImplTest {
     }
 
     @Test
+    fun `durable assets survive a reload`() {
+        val sessionId = UUID.randomUUID().toString()
+        chatSessionRepository.createSession(sessionId, testUser, "With Asset")
+        val messageId = UUID.randomUUID().toString()
+        val asset = AssetData(
+            storedAssetId = "$messageId:asset-1",
+            assetId = "asset-${UUID.randomUUID()}",
+            name = "report.pdf",
+            mimeType = "application/pdf",
+            sizeBytes = 4096,
+            contentHash = "c".repeat(64),
+            storageUri = "asset://reports/report.pdf",
+            createdAt = Instant.now(),
+        )
+
+        chatSessionRepository.addMessageWithAssets(
+            sessionId = sessionId,
+            messageData = MessageData(
+                messageId = messageId,
+                role = MessageRole.ASSISTANT,
+                content = "Here is the report",
+                createdAt = Instant.now(),
+            ),
+            assets = listOf(asset),
+        )
+
+        val reloaded = chatSessionRepository.getMessages(sessionId).single()
+        assertEquals(listOf(asset), reloaded.assets)
+        assertEquals(listOf(asset.toAsset()), (reloaded.toMessage() as com.embabel.chat.AssistantMessage).assets)
+        assertEquals(1, countNodes("StoredAsset", "storedAssetId", asset.storedAssetId))
+    }
+
+    @Test
     fun `deleting a session removes its attachments`() {
         // Attachments hang off messages, and messages cascade on session delete. If the
         // cascade does not reach them, deleted conversations leave orphaned :Attachment
@@ -918,5 +952,37 @@ class ChatSessionRepositoryImplTest {
         chatSessionRepository.deleteSession(sessionId)
 
         assertEquals(0, countNodes("Attachment", "attachmentId", attachment.attachmentId))
+    }
+
+    @Test
+    fun `deleting a session removes its durable asset metadata`() {
+        val sessionId = UUID.randomUUID().toString()
+        chatSessionRepository.createSession(sessionId, testUser, "Doomed Asset")
+        val messageId = UUID.randomUUID().toString()
+        val asset = AssetData(
+            storedAssetId = "$messageId:asset-1",
+            assetId = "asset-${UUID.randomUUID()}",
+            name = "report.pdf",
+            mimeType = "application/pdf",
+            sizeBytes = 4096,
+            contentHash = "d".repeat(64),
+            storageUri = "asset://reports/report.pdf",
+            createdAt = Instant.now(),
+        )
+        chatSessionRepository.addMessageWithAssets(
+            sessionId = sessionId,
+            messageData = MessageData(
+                messageId = messageId,
+                role = MessageRole.ASSISTANT,
+                content = "Here is the report",
+                createdAt = Instant.now(),
+            ),
+            assets = listOf(asset),
+        )
+        assertEquals(1, countNodes("StoredAsset", "storedAssetId", asset.storedAssetId))
+
+        chatSessionRepository.deleteSession(sessionId)
+
+        assertEquals(0, countNodes("StoredAsset", "storedAssetId", asset.storedAssetId))
     }
 }
