@@ -21,8 +21,8 @@ import org.drivine.annotation.GraphView
 import org.drivine.annotation.Root
 
 /**
- * Delete-only view of a message: the `:StoredMessage` node plus the `:Attachment` nodes
- * that hang off it, and nothing else.
+ * Delete-only view of a message: the `:StoredMessage` node plus its owned attachment
+ * and durable asset metadata nodes, and nothing else.
  *
  * Exists because the cascade boundary IS the view shape. [DeletableSession] previously
  * declared its children as bare [MessageData], which was correct while a message owned no
@@ -37,6 +37,7 @@ import org.drivine.annotation.Root
  * Neo4j structure traversed:
  * ```
  * (msg:StoredMessage)-[:HAS_ATTACHMENT]->(att:Attachment)
+ * (msg:StoredMessage)-[:HAS_ASSET]->(asset:StoredAsset)
  * ```
  *
  * @see DeletableSession for the session-level cascade this composes into
@@ -52,5 +53,12 @@ data class DeletableMessage(
      * The message's attachments, deleted with it.
      */
     @GraphRelationship(type = "HAS_ATTACHMENT", direction = Direction.OUTGOING)
-    val attachments: List<AttachmentData> = emptyList()
+    val attachments: List<AttachmentData> = emptyList(),
+
+    /**
+     * The message's durable asset metadata, deleted with it.
+     * External content retention remains the asset store's responsibility.
+     */
+    @GraphRelationship(type = "HAS_ASSET", direction = Direction.OUTGOING)
+    val assets: List<AssetData> = emptyList(),
 )

@@ -16,6 +16,7 @@
 package com.embabel.chat.store.repository
 
 import com.embabel.chat.store.model.AttachmentData
+import com.embabel.chat.store.model.AssetData
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.SessionSummary
 import com.embabel.chat.store.model.SimpleStoredMessage
@@ -163,6 +164,21 @@ interface ChatSessionRepository {
         author: StoredUser? = null,
         recipient: StoredUser? = null,
         attachments: List<AttachmentData> = emptyList()
+    ): StoredSession
+
+    /**
+     * Add a message and its durable asset metadata to a session.
+     *
+     * This is separate from [addMessage] to preserve the existing message and attachment
+     * write path for callers that do not produce assets.
+     */
+    fun addMessageWithAssets(
+        sessionId: String,
+        messageData: MessageData,
+        author: StoredUser? = null,
+        recipient: StoredUser? = null,
+        attachments: List<AttachmentData> = emptyList(),
+        assets: List<AssetData>,
     ): StoredSession
 
     /**

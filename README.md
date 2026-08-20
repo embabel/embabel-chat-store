@@ -44,6 +44,31 @@ ConversationFactoryProvider
 | `IN_MEMORY` | `InMemoryConversation` | Testing, ephemeral chats |
 | `STORED` | `StoredConversation` | Production, persistent chats |
 
+## Durable Assistant Assets
+
+`StoredConversation` persists `DurableAsset` metadata carried by an `AssistantMessage` and
+restores those assets when the conversation is loaded again:
+
+```kotlin
+val message = AssistantMessage(
+    content = "Here is the report",
+    assets = listOf(durableAsset),
+)
+conversation.addMessage(message)
+```
+
+Asset metadata is stored in `StoredAsset` nodes connected to the message through `HAS_ASSET`.
+The content bytes are not stored in the graph. `storageUri` remains an opaque reference resolved
+by the `AssetStore` that originally materialized the asset.
+
+Only `DurableAsset` instances are persisted. Ephemeral or application-specific `Asset`
+implementations remain available while the message is pending in memory but cannot be restored
+after a reload. Applications should materialize temporary assets before adding the assistant
+message to a stored conversation.
+
+Deleting a session deletes its `StoredAsset` metadata nodes. It does not delete externally stored
+content; retention and content deletion remain the responsibility of the corresponding `AssetStore`.
+
 ## Message Events
 
 Subscribe to message lifecycle events for real-time updates:

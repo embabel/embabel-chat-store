@@ -16,6 +16,7 @@
 package com.embabel.chat.store.model
 
 import com.embabel.chat.AssistantMessage
+import com.embabel.chat.DurableAsset
 import com.embabel.chat.Message
 import com.embabel.chat.MessageRole
 import com.embabel.chat.SystemMessage
@@ -110,9 +111,10 @@ data class MessageData(
     /**
      * Convert to a rich agent-api [Message] type.
      */
-    fun toMessage(): Message = when (role) {
+    @JvmOverloads
+    fun toMessage(assets: List<DurableAsset> = emptyList()): Message = when (role) {
         MessageRole.USER -> UserMessage(content = content, timestamp = createdAt)
-        MessageRole.ASSISTANT -> AssistantMessage(content = content, timestamp = createdAt)
+        MessageRole.ASSISTANT -> AssistantMessage(content = content, assets = assets, timestamp = createdAt)
         MessageRole.SYSTEM -> SystemMessage(content = content, timestamp = createdAt)
     }
 }
@@ -162,7 +164,11 @@ data class SimpleStoredMessage(
      * reload rather than existing only for the turn it arrived in.
      */
     @GraphRelationship(type = "HAS_ATTACHMENT", direction = Direction.OUTGOING)
-    val attachments: List<AttachmentData> = emptyList()
+    val attachments: List<AttachmentData> = emptyList(),
+
+    /** Durable assets produced with this assistant message. */
+    @GraphRelationship(type = "HAS_ASSET", direction = Direction.OUTGOING)
+    val assets: List<AssetData> = emptyList(),
 ) : Message {
     // Convenience accessors for common properties
     val messageId: String get() = message.messageId
@@ -177,7 +183,7 @@ data class SimpleStoredMessage(
     /**
      * Convert to a rich agent-api [Message] type.
      */
-    fun toMessage(): Message = message.toMessage()
+    fun toMessage(): Message = message.toMessage(assets.map { it.toAsset() })
 }
 
 /**
@@ -200,7 +206,11 @@ data class AttributedMessage(
 
     /** Files attached to this message. See [SimpleStoredMessage.attachments]. */
     @GraphRelationship(type = "HAS_ATTACHMENT", direction = Direction.OUTGOING)
-    val attachments: List<AttachmentData> = emptyList()
+    val attachments: List<AttachmentData> = emptyList(),
+
+    /** Durable assets produced with this assistant message. */
+    @GraphRelationship(type = "HAS_ASSET", direction = Direction.OUTGOING)
+    val assets: List<AssetData> = emptyList(),
 )
 
 /**

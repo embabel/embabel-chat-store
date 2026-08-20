@@ -16,9 +16,11 @@
 package com.embabel.chat.store.adapter
 
 import com.embabel.chat.AssistantMessage
+import com.embabel.chat.DurableAsset
 import com.embabel.chat.MessageRole
 import com.embabel.chat.SystemMessage
 import com.embabel.chat.UserMessage
+import com.embabel.chat.store.model.AssetData
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.SimpleStoredMessage
 import com.embabel.chat.store.model.StoredUser
@@ -30,6 +32,52 @@ import java.time.Instant
  * Tests for MessageData and SimpleStoredMessage conversion methods.
  */
 class MessageDataConversionTest {
+
+    @Test
+    fun `AssetData round trips DurableAsset metadata`() {
+        val timestamp = Instant.parse("2026-08-20T00:00:00Z")
+        val asset = DurableAsset(
+            id = "asset-1",
+            name = "report.pdf",
+            mimeType = "application/pdf",
+            sizeBytes = 42,
+            contentHash = "abc123",
+            storageUri = "asset://reports/asset-1",
+            timestamp = timestamp,
+        )
+
+        val restored = AssetData.from(asset, "msg-1").toAsset()
+
+        assertEquals(asset, restored)
+        assertTrue(restored.persistent())
+    }
+
+    @Test
+    fun `SimpleStoredMessage restores durable assistant assets`() {
+        val asset = AssetData(
+            storedAssetId = "msg-1:asset-1",
+            assetId = "asset-1",
+            name = "report.pdf",
+            mimeType = "application/pdf",
+            sizeBytes = 42,
+            contentHash = "abc123",
+            storageUri = "asset://reports/asset-1",
+            createdAt = Instant.parse("2026-08-20T00:00:00Z"),
+        )
+        val stored = SimpleStoredMessage(
+            message = MessageData(
+                messageId = "msg-1",
+                role = MessageRole.ASSISTANT,
+                content = "Here is the report",
+                createdAt = Instant.now(),
+            ),
+            assets = listOf(asset),
+        )
+
+        val restored = stored.toMessage() as AssistantMessage
+
+        assertEquals(listOf(asset.toAsset()), restored.assets)
+    }
 
     @Test
     fun `MessageData from UserMessage converts correctly`() {

@@ -17,6 +17,7 @@ package com.embabel.chat.store.repository
 
 import com.embabel.chat.store.event.SessionCreatedEvent
 import com.embabel.chat.store.model.AttachmentData
+import com.embabel.chat.store.model.AssetData
 import com.embabel.chat.store.model.AttributedMessage
 import com.embabel.chat.store.model.DeletableSession
 import com.embabel.chat.store.model.MessageData
@@ -270,10 +271,43 @@ open class ChatSessionRepositoryImpl(
         author: StoredUser?,
         recipient: StoredUser?,
         attachments: List<AttachmentData>
+    ): StoredSession = addMessageInternal(
+        sessionId = sessionId,
+        messageData = messageData,
+        author = author,
+        recipient = recipient,
+        attachments = attachments,
+        assets = emptyList(),
+    )
+
+    @Transactional
+    override fun addMessageWithAssets(
+        sessionId: String,
+        messageData: MessageData,
+        author: StoredUser?,
+        recipient: StoredUser?,
+        attachments: List<AttachmentData>,
+        assets: List<AssetData>,
+    ): StoredSession = addMessageInternal(
+        sessionId = sessionId,
+        messageData = messageData,
+        author = author,
+        recipient = recipient,
+        attachments = attachments,
+        assets = assets,
+    )
+
+    private fun addMessageInternal(
+        sessionId: String,
+        messageData: MessageData,
+        author: StoredUser?,
+        recipient: StoredUser?,
+        attachments: List<AttachmentData>,
+        assets: List<AssetData>,
     ): StoredSession {
         logger.debug(
-            "Adding message {} to session {} ({} attachments)",
-            messageData.messageId, sessionId, attachments.size,
+            "Adding message {} to session {} ({} attachments, {} assets)",
+            messageData.messageId, sessionId, attachments.size, assets.size,
         )
 
         // Verify the session exists and advance its activity in a single statement — MERGE on
@@ -290,7 +324,8 @@ open class ChatSessionRepositoryImpl(
                 message = messageData,
                 author = author?.let { UserRef(it.id) },
                 recipient = recipient?.let { UserRef(it.id) },
-                attachments = attachments
+                attachments = attachments,
+                assets = assets,
             )
         )
         graphObjectManager.save(newMessage, CascadeType.PRESERVE)

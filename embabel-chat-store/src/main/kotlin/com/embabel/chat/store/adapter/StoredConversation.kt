@@ -16,8 +16,10 @@
 package com.embabel.chat.store.adapter
 
 import com.embabel.agent.api.identity.User
+import com.embabel.chat.AssistantMessage
 import com.embabel.chat.AssetTracker
 import com.embabel.chat.Conversation
+import com.embabel.chat.DurableAsset
 import com.embabel.chat.Message
 import com.embabel.chat.MessageRole
 import com.embabel.chat.event.MessageEvent
@@ -25,6 +27,7 @@ import com.embabel.chat.store.embedding.MessageEmbedder
 import com.embabel.chat.store.event.MessagePersistedEvent
 import com.embabel.chat.store.event.SessionEventAwaiter
 import com.embabel.chat.store.model.AttachmentData
+import com.embabel.chat.store.model.AssetData
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.StoredSession
 import com.embabel.chat.store.model.StoredUser
@@ -101,7 +104,7 @@ class StoredConversation(
 
     private val logger = LoggerFactory.getLogger(StoredConversation::class.java)
 
-    private val pendingMessages = ConcurrentLinkedQueue<MessageData>()
+    private val pendingMessages = ConcurrentLinkedQueue<PendingMessage>()
 
     /**
      * Returns true since this conversation is backed by persistent storage.
@@ -116,8 +119,8 @@ class StoredConversation(
         get() {
             val dbMessages = repository.getMessages(id)
             val dbMessageIds = dbMessages.mapTo(HashSet()) { it.messageId }
-            val pending = pendingMessages.filter { it.messageId !in dbMessageIds }
-            return dbMessages.map { it.toMessage() } + pending.map { it.toMessage() }
+            val pending = pendingMessages.filter { it.messageData.messageId !in dbMessageIds }
+            return dbMessages.map { it.toMessage() } + pending.map { it.message }
         }
 
     /**
@@ -257,6 +260,17 @@ class StoredConversation(
         attachments: List<AttachmentData> = emptyList()
     ): String {
         val messageData = MessageData.from(message, messageId = UUIDv7.generateString())
+        val messageAssets = (message as? AssistantMessage)?.assets.orEmpty()
+        val durableAssets = messageAssets.filterIsInstance<DurableAsset>().map {
+            AssetData.from(it, messageData.messageId)
+        }
+        if (messageAssets.size != durableAssets.size) {
+            logger.warn(
+                "Message {} has {} non-durable assets that will not survive conversation reload",
+                messageData.messageId,
+                messageAssets.size - durableAssets.size,
+            )
+        }
 
         // Generate an interim title from the first user message so the session
         // appears immediately in the UI.  The LLM will replace it later once
@@ -281,17 +295,26 @@ class StoredConversation(
         )
 
         // Add to pending buffer so getMessages() returns this message immediately
-        pendingMessages.add(messageData)
+        val pendingMessage = PendingMessage(messageData, message)
+        pendingMessages.add(pendingMessage)
 
         // DB write — asynchronous, non-blocking. The pending buffer ensures
         // consistent reads while the write is in flight.
         scope.launch {
             try {
                 val messageDataForDb = embedMessageData(message, messageData)
-                val updatedSession = addMessageWithAwait(id, messageDataForDb, from, to, signal, attachments)
+                val updatedSession = addMessageWithAwait(
+                    id,
+                    messageDataForDb,
+                    from,
+                    to,
+                    signal,
+                    attachments,
+                    durableAssets,
+                )
 
                 // Persisted — remove from pending buffer (DB is now the source of truth)
-                pendingMessages.remove(messageData)
+                pendingMessages.remove(pendingMessage)
 
                 // PERSISTED event
                 try {
@@ -381,10 +404,11 @@ class StoredConversation(
         author: StoredUser?,
         recipient: StoredUser?,
         signal: CompletableDeferred<Unit>,
-        attachments: List<AttachmentData> = emptyList()
+        attachments: List<AttachmentData> = emptyList(),
+        assets: List<AssetData> = emptyList(),
     ): StoredSession {
         return try {
-            repository.addMessage(sessionId, messageData, author, recipient, attachments)
+            persistMessage(sessionId, messageData, author, recipient, attachments, assets)
         } catch (e: IllegalArgumentException) {
             if (e.message?.contains("Session not found") != true) throw e
 
@@ -393,9 +417,27 @@ class StoredConversation(
                 sessionId, messageData.messageId
             )
             sessionEventAwaiter.awaitSession(signal)
-            repository.addMessage(sessionId, messageData, author, recipient, attachments)
+            persistMessage(sessionId, messageData, author, recipient, attachments, assets)
         }
     }
+
+    private fun persistMessage(
+        sessionId: String,
+        messageData: MessageData,
+        author: StoredUser?,
+        recipient: StoredUser?,
+        attachments: List<AttachmentData>,
+        assets: List<AssetData>,
+    ): StoredSession = if (assets.isEmpty()) {
+        repository.addMessage(sessionId, messageData, author, recipient, attachments)
+    } else {
+        repository.addMessageWithAssets(sessionId, messageData, author, recipient, attachments, assets)
+    }
+
+    private data class PendingMessage(
+        val messageData: MessageData,
+        val message: Message,
+    )
 
     companion object {
         /**

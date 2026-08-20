@@ -18,6 +18,7 @@ package com.embabel.chat.store.adapter
 import com.embabel.chat.MessageRole
 import com.embabel.chat.UserMessage
 import com.embabel.chat.AssistantMessage
+import com.embabel.chat.DurableAsset
 import com.embabel.chat.SystemMessage
 import com.embabel.chat.event.MessageEvent
 import com.embabel.chat.event.MessageStatus
@@ -25,6 +26,7 @@ import com.embabel.chat.store.embedding.EmbeddingResult
 import com.embabel.chat.store.embedding.MessageEmbedder
 import com.embabel.chat.store.event.SessionEventAwaiter
 import com.embabel.chat.store.model.MessageData
+import com.embabel.chat.store.model.AssetData
 import com.embabel.chat.store.model.SessionData
 import com.embabel.chat.store.model.SimpleStoredMessage
 import com.embabel.chat.store.model.StoredSession
@@ -223,6 +225,48 @@ class StoredConversationTest {
         assertEquals("Third", messages[2].content)
 
         latch.countDown()
+    }
+
+    @Test
+    fun `assistant durable assets are visible while pending and persisted with the message`() {
+        val persistenceLatch = CountDownLatch(1)
+        whenever(repository.addMessageWithAssets(eq(sessionId), any(), any(), any(), any(), any())).thenAnswer {
+            val messageData = it.getArgument<MessageData>(1)
+            val assets = it.getArgument<List<AssetData>>(5)
+            persistenceLatch.countDown()
+            StoredSession(
+                session = SessionData(sessionId = sessionId, title = "Test", createdAt = Instant.now()),
+                owner = user,
+                messages = listOf(SimpleStoredMessage(messageData, assets = assets)),
+            )
+        }
+        whenever(repository.getMessages(sessionId)).thenReturn(emptyList())
+        val asset = DurableAsset(
+            id = "asset-1",
+            name = "report.pdf",
+            mimeType = "application/pdf",
+            sizeBytes = 42,
+            contentHash = "abc123",
+            storageUri = "asset://reports/asset-1",
+        )
+        val conversation = createConversation()
+
+        conversation.addMessage(AssistantMessage("Here is the report", assets = listOf(asset)))
+
+        val pending = conversation.messages.single() as AssistantMessage
+        assertEquals(listOf(asset), pending.assets)
+        assertTrue(persistenceLatch.await(5, TimeUnit.SECONDS))
+        val assetsCaptor = argumentCaptor<List<AssetData>>()
+        verify(repository, timeout(5000)).addMessageWithAssets(
+            eq(sessionId),
+            any(),
+            any(),
+            any(),
+            any(),
+            assetsCaptor.capture(),
+        )
+        assertEquals(asset.id, assetsCaptor.firstValue.single().assetId)
+        assertTrue(assetsCaptor.firstValue.single().storedAssetId.endsWith(":${asset.id}"))
     }
 
     // ==================== Event tests ====================
