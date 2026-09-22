@@ -40,6 +40,8 @@ import org.drivine.manager.GraphObjectManager
 import org.drivine.manager.PersistenceManager
 import org.drivine.manager.delete
 import org.drivine.manager.load
+import org.drivine.schema.EnsureResult
+import org.drivine.schema.VectorIndexSpec
 import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.OrderBuilder
 import org.drivine.query.dsl.OrderSpec
@@ -71,6 +73,84 @@ open class ChatSessionRepositoryImpl(
 ) : ChatSessionRepository {
 
     private val logger = LoggerFactory.getLogger(ChatSessionRepositoryImpl::class.java)
+
+    /**
+     * NOT `@Transactional`, deliberately.
+     *
+     * Neo4j will not take schema work and data work in one transaction: the DDL runs on its own
+     * session and waits on the schema locks an open data transaction holds, while that transaction
+     * waits to commit. Doing exactly this inside a transactional method deadlocked dice's
+     * equivalent — the request never returned and the index was left dropped (embabel/dice#117).
+     * So the DDL sits either side, and only the rewrite is transactional.
+     *
+     * Drop before rewriting rather than remake after: an index left standing through the run
+     * spends it describing a width none of the rewritten vectors have.
+     */
+    override fun reembedMessages(
+        modelName: String,
+        spec: VectorIndexSpec,
+        embed: (List<String>) -> List<List<Double>>,
+    ): MessageReembedReport {
+        // `ensure` is non-destructive and reports Drift against an index of a different shape, so
+        // it asks "does the stored index still describe what this model produces?" as well as
+        // creating one when absent. Wider or narrower is the same question.
+        val shapeChanged = persistenceManager.indexes.ensure(spec) is EnsureResult.Drift
+        if (shapeChanged) {
+            logger.info("Message embedding shape changed; dropping {} and remaking it after the re-embed", spec.effectiveName)
+            persistenceManager.indexes.drop(spec)
+        }
+        val rewritten = rewriteMessageEmbeddings(modelName, embed)
+        if (shapeChanged) persistenceManager.indexes.ensure(spec)
+        logger.info("reembedMessages done: messages={} model={} indexRecreated={}", rewritten, modelName, shapeChanged)
+        return MessageReembedReport(messages = rewritten, indexRecreated = shapeChanged)
+    }
+
+    /**
+     * Rewrite every message vector not already made by [modelName], in pages.
+     *
+     * Paged rather than loaded whole: a busy world's message history is the largest thing in this
+     * store, and one `embed` call per page bounds both the request size and the memory held.
+     * Messages already at the current model are filtered in Cypher, so a resumed run does no work
+     * for what it already did.
+     */
+    @Transactional
+    protected open fun rewriteMessageEmbeddings(
+        modelName: String,
+        embed: (List<String>) -> List<List<Double>>,
+    ): Int {
+        var total = 0
+        while (true) {
+            val page = persistenceManager.query(
+                QuerySpecification
+                    .withStatement(
+                        """
+                        MATCH (m:StoredMessage)
+                        WHERE m.content IS NOT NULL AND m.content <> ''
+                          AND coalesce(m.embeddingModel, '') <> ${'$'}model
+                        RETURN m.messageId AS messageId, m.content AS content
+                        LIMIT ${'$'}limit
+                        """.trimIndent(),
+                    )
+                    .bind(mapOf("model" to modelName, "limit" to REEMBED_PAGE_SIZE))
+                    .transform(MessageText::class.java),
+            )
+            if (page.isEmpty()) break
+            val ids = page.map { it.messageId }
+            val vectors = embed(page.map { it.content })
+            persistenceManager.executeBatch(
+                ids.mapIndexed { i, id ->
+                    QuerySpecification
+                        .withStatement(
+                            "MATCH (m:StoredMessage {messageId: ${'$'}id}) " +
+                                "SET m.embedding = ${'$'}embedding, m.embeddingModel = ${'$'}model",
+                        )
+                        .bind(mapOf("id" to id, "embedding" to vectors[i], "model" to modelName))
+                },
+            )
+            total += ids.size
+        }
+        return total
+    }
 
     @Transactional
     override fun createSession(sessionId: String, owner: StoredUser, title: String?): StoredSession {
@@ -404,4 +484,18 @@ open class ChatSessionRepositoryImpl(
         } else null
         return SessionPage(items, nextCursor)
     }
+
+    /** One row of the re-embed scan: the message to rewrite, and the text to rewrite it from. */
+    data class MessageText(val messageId: String, val content: String)
+
+    private companion object {
+        /**
+         * Messages per embedding call and per write batch.
+         *
+         * One page is held in memory and sent as one request, so this bounds both. 200 matches
+         * what DrivineStore uses for chunks; nothing here is tuned to a measurement.
+         */
+        const val REEMBED_PAGE_SIZE = 200
+    }
+
 }

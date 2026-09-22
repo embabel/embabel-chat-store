@@ -22,6 +22,7 @@ import com.embabel.chat.store.model.SimpleStoredMessage
 import com.embabel.chat.store.model.StoredSession
 import com.embabel.chat.store.model.StoredUser
 import java.util.Optional
+import org.drivine.schema.VectorIndexSpec
 
 /**
  * Repository for chat session persistence operations.
@@ -31,6 +32,37 @@ import java.util.Optional
  * list of messages.
  */
 interface ChatSessionRepository {
+
+    /**
+     * Re-embed stored messages with [embed], and leave the message vector index describing what
+     * they now hold.
+     *
+     * A CHANGE OF EMBEDDING MODEL DOES NOT REACH STORED MESSAGES ON ITS OWN. `MessageData` records
+     * `embeddingModel` per row precisely so a caller can tell which vectors a model change has
+     * orphaned — and until this existed nothing acted on it. Measured on a live appliance after
+     * moving from a 1536-wide model to a 3072-wide one: chunks and propositions were rewritten,
+     * and the messages were left at 1536, still searchable and made by a model the queries no
+     * longer used.
+     *
+     * Skips messages whose `embeddingModel` already names [modelName], so a second run costs a
+     * scan and no embedding calls, and an interrupted run resumes where it stopped.
+     *
+     * THE INDEX SPEC IS SUPPLIED, not built here: it is described by `ChatStoreProperties` in the
+     * autoconfiguration module, which this one cannot see. The caller that owns the spec for the
+     * startup catalog passes the same one here, so the index made at boot and the index remade
+     * around a re-embed cannot describe different things.
+     *
+     * @param modelName what the current model calls itself — written onto each row it rewrites
+     * @param spec the message vector index, at the width the current model produces
+     * @param embed turns message content into vectors; called in batches
+     * @return how many messages were rewritten, and whether the index had to be rebuilt
+     */
+    fun reembedMessages(
+        modelName: String,
+        spec: VectorIndexSpec,
+        embed: (List<String>) -> List<List<Double>>,
+    ): MessageReembedReport
+
 
     // ==================== Session CRUD ====================
 
