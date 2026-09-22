@@ -220,19 +220,39 @@ open class ChatStoreAutoConfiguration {
             logger.warn("Skipping chat-message vector index schema: no embedding model ({})", it.message, it)
             return SchemaCatalog.of().named(VECTOR_SCHEMA_OWNER)
         }
-        val vi = properties.vectorIndex
-        val spec = VectorIndexSpec(
-            label = vi.label,
-            property = vi.property,
-            dimensions = dimensions,
-            similarity = SimilarityFunction.valueOf(vi.similarityFunction.uppercase()),
-            name = vi.name,
-        )
+        val spec = vectorIndexSpec(properties, dimensions)
         logger.info("Registering chat-message vector index schema: {} (model={})", spec, modelName)
         return SchemaCatalog.of(spec).named(VECTOR_SCHEMA_OWNER).withVersion(modelName)
     }
 
+    /**
+     * The message vector index, at a given width.
+     *
+     * ONE BUILDER, used by the startup catalog above and by [MessageReembedder]. Two would be two
+     * declarations of one identity with nothing keeping them in step — which is how an index made
+     * at boot and an index remade around a re-embed end up describing different things.
+     */
+    @Bean
+    @ConditionalOnMissingBean(MessageReembedder::class)
+    open fun messageReembedder(
+        repository: ChatSessionRepository,
+        properties: ChatStoreProperties,
+    ): MessageReembedder = MessageReembedder(repository) { dimensions -> vectorIndexSpec(properties, dimensions) }
+
     companion object {
+
+        /** Shared by the startup catalog and the re-embed, so the two cannot describe different indexes. */
+        internal fun vectorIndexSpec(properties: ChatStoreProperties, dimensions: Int): VectorIndexSpec {
+            val vi = properties.vectorIndex
+            return VectorIndexSpec(
+                label = vi.label,
+                property = vi.property,
+                dimensions = dimensions,
+                similarity = SimilarityFunction.valueOf(vi.similarityFunction.uppercase()),
+                name = vi.name,
+            )
+        }
+
         /** Drivine schema owner for the chat-store constraints. */
         const val CONSTRAINT_SCHEMA_OWNER = "embabel-chat-store"
 
