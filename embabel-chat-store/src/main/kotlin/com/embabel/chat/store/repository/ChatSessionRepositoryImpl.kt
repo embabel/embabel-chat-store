@@ -127,7 +127,7 @@ open class ChatSessionRepositoryImpl(
                         MATCH (m:StoredMessage)
                         WHERE m.content IS NOT NULL AND m.content <> ''
                           AND coalesce(m.embeddingModel, '') <> ${'$'}model
-                        RETURN m.messageId AS messageId, m.content AS content
+                        RETURN { messageId: m.messageId, content: m.content }
                         LIMIT ${'$'}limit
                         """.trimIndent(),
                     )
@@ -486,6 +486,14 @@ open class ChatSessionRepositoryImpl(
     }
 
     /** One row of the re-embed scan: the message to rewrite, and the text to rewrite it from. */
+    /**
+     * One page row, projected as a MAP and not as two columns.
+     *
+     * `transform(Class)` deserializes ONE value per row, so `RETURN a, b` hands Jackson the row as
+     * an array and it fails with "Cannot deserialize ... from Array value". A map literal is the
+     * shape it expects. The error surfaced only against a real database, which is why
+     * [ChatSessionReembedIntegrationTest] talks to one.
+     */
     data class MessageText(val messageId: String, val content: String)
 
     private companion object {
