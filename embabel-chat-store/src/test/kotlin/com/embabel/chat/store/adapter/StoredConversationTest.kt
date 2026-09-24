@@ -19,6 +19,8 @@ import com.embabel.chat.MessageRole
 import com.embabel.chat.UserMessage
 import com.embabel.chat.AssistantMessage
 import com.embabel.chat.DurableAsset
+import com.embabel.chat.ImagePart
+import com.embabel.chat.TextPart
 import com.embabel.chat.SystemMessage
 import com.embabel.chat.event.MessageEvent
 import com.embabel.chat.event.MessageStatus
@@ -27,6 +29,7 @@ import com.embabel.chat.store.embedding.MessageEmbedder
 import com.embabel.chat.store.event.SessionEventAwaiter
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.AssetData
+import com.embabel.chat.store.model.ContentPartData
 import com.embabel.chat.store.model.SessionData
 import com.embabel.chat.store.model.SimpleStoredMessage
 import com.embabel.chat.store.model.StoredSession
@@ -267,6 +270,40 @@ class StoredConversationTest {
         )
         assertEquals(asset.id, assetsCaptor.firstValue.single().assetId)
         assertTrue(assetsCaptor.firstValue.single().storedAssetId.endsWith(":${asset.id}"))
+    }
+
+    @Test
+    fun `multimodal user message parts are persisted with the message`() {
+        val persistenceLatch = CountDownLatch(1)
+        whenever(repository.addMessageWithContentParts(eq(sessionId), any(), any(), any(), any(), any(), any()))
+            .thenAnswer {
+                val messageData = it.getArgument<MessageData>(1)
+                val contentParts = it.getArgument<List<ContentPartData>>(6)
+                persistenceLatch.countDown()
+                StoredSession(
+                    session = SessionData(sessionId = sessionId, title = "Test", createdAt = Instant.now()),
+                    owner = user,
+                    messages = listOf(SimpleStoredMessage(messageData, contentParts = contentParts)),
+                )
+            }
+        whenever(repository.getMessages(sessionId)).thenReturn(emptyList())
+        val message = UserMessage(
+            parts = listOf(
+                TextPart("What is in this image?"),
+                ImagePart("image/png", byteArrayOf(1, 2, 3)),
+            ),
+        )
+        val conversation = createConversation()
+
+        conversation.addMessage(message)
+
+        assertEquals(message.parts, (conversation.messages.single() as UserMessage).parts)
+        assertTrue(persistenceLatch.await(5, TimeUnit.SECONDS))
+        val partsCaptor = argumentCaptor<List<ContentPartData>>()
+        verify(repository, timeout(5000)).addMessageWithContentParts(
+            eq(sessionId), any(), any(), any(), any(), any(), partsCaptor.capture(),
+        )
+        assertEquals(message.parts, partsCaptor.firstValue.map { it.toContentPart() })
     }
 
     // ==================== Event tests ====================

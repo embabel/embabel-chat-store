@@ -17,6 +17,7 @@ package com.embabel.chat.store.repository
 
 import com.embabel.chat.store.model.AttachmentData
 import com.embabel.chat.store.model.AssetData
+import com.embabel.chat.store.model.ContentPartData
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.SessionSummary
 import com.embabel.chat.store.model.SimpleStoredMessage
@@ -254,6 +255,25 @@ interface ChatSessionRepository {
             recipient = recipient,
             attachments = attachments,
         )
+    }
+
+    /**
+     * Add a message with ordered multimodal content parts and optional durable assets.
+     *
+     * The default keeps third-party repository implementations source-compatible and
+     * explicitly rejects structured content until they implement its persistence.
+     */
+    fun addMessageWithContentParts(
+        sessionId: String,
+        messageData: MessageData,
+        author: StoredUser? = null,
+        recipient: StoredUser? = null,
+        attachments: List<AttachmentData> = emptyList(),
+        assets: List<AssetData> = emptyList(),
+        contentParts: List<ContentPartData>,
+    ): StoredSession {
+        require(contentParts.isEmpty()) { "This chat session repository does not support multimodal content parts" }
+        return addMessageWithAssets(sessionId, messageData, author, recipient, attachments, assets)
     }
 
     /**

@@ -15,10 +15,13 @@
  */
 package com.embabel.chat.store.repository
 
+import com.embabel.chat.ImagePart
 import com.embabel.chat.MessageRole
+import com.embabel.chat.TextPart
 import com.embabel.chat.store.TestApplication
 import com.embabel.chat.store.model.AttachmentData
 import com.embabel.chat.store.model.AssetData
+import com.embabel.chat.store.model.ContentPartData
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.TestSessionUser
 import com.embabel.chat.store.util.UUIDv7
@@ -955,6 +958,36 @@ class ChatSessionRepositoryImplTest {
     }
 
     @Test
+    fun `multimodal content parts survive a reload`() {
+        val sessionId = UUID.randomUUID().toString()
+        chatSessionRepository.createSession(sessionId, testUser, "Multimodal")
+        val messageId = UUID.randomUUID().toString()
+        val parts = listOf(
+            ContentPartData.from(TextPart("Describe this"), messageId, 0),
+            ContentPartData.from(ImagePart("image/png", byteArrayOf(1, 2, 3)), messageId, 1),
+        )
+
+        chatSessionRepository.addMessageWithContentParts(
+            sessionId = sessionId,
+            messageData = MessageData(
+                messageId = messageId,
+                role = MessageRole.USER,
+                content = "Describe this",
+                createdAt = Instant.now(),
+            ),
+            author = testUser,
+            contentParts = parts,
+        )
+
+        val reloaded = chatSessionRepository.getMessages(sessionId).single()
+        assertEquals(parts.map { it.toContentPart() }, reloaded.contentParts.map { it.toContentPart() })
+        assertEquals(parts.map { it.toContentPart() }, (reloaded.toMessage() as com.embabel.chat.UserMessage).parts)
+        parts.forEach {
+            assertEquals(1, countNodes("StoredContentPart", "storedContentPartId", it.storedContentPartId))
+        }
+    }
+
+    @Test
     fun `deleting a session removes its attachments`() {
         // Attachments hang off messages, and messages cascade on session delete. If the
         // cascade does not reach them, deleted conversations leave orphaned :Attachment
@@ -1017,5 +1050,28 @@ class ChatSessionRepositoryImplTest {
         chatSessionRepository.deleteSession(sessionId)
 
         assertEquals(0, countNodes("StoredAsset", "storedAssetId", asset.storedAssetId))
+    }
+
+    @Test
+    fun `deleting a session removes its multimodal content parts`() {
+        val sessionId = UUID.randomUUID().toString()
+        chatSessionRepository.createSession(sessionId, testUser, "Doomed Multimodal Message")
+        val messageId = UUID.randomUUID().toString()
+        val part = ContentPartData.from(ImagePart("image/png", byteArrayOf(1)), messageId, 0)
+        chatSessionRepository.addMessageWithContentParts(
+            sessionId = sessionId,
+            messageData = MessageData(
+                messageId = messageId,
+                role = MessageRole.USER,
+                content = "",
+                createdAt = Instant.now(),
+            ),
+            contentParts = listOf(part),
+        )
+        assertEquals(1, countNodes("StoredContentPart", "storedContentPartId", part.storedContentPartId))
+
+        chatSessionRepository.deleteSession(sessionId)
+
+        assertEquals(0, countNodes("StoredContentPart", "storedContentPartId", part.storedContentPartId))
     }
 }
