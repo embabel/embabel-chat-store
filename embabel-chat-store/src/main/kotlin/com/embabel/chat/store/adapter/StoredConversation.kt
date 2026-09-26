@@ -118,12 +118,7 @@ class StoredConversation(
      * Pending messages that have already appeared in the DB result are deduplicated by messageId.
      */
     override val messages: List<Message>
-        get() {
-            val dbMessages = repository.getMessages(id)
-            val dbMessageIds = dbMessages.mapTo(HashSet()) { it.messageId }
-            val pending = pendingMessages.filter { it.messageData.messageId !in dbMessageIds }
-            return dbMessages.map { it.toMessage() } + pending.map { it.message }
-        }
+        get() = entries.map { it.message }
 
     /**
      * Add a message using default [user] and [agent] for attribution based on role.
@@ -155,16 +150,35 @@ class StoredConversation(
      *
      * @param message the message to add
      * @param attachments files to attach; empty behaves exactly like [addMessage]
+     * @param inReplyTo the ID of the message this one answers, stored with it on the same write
      * @return the message ID
      */
-    fun addMessageWithId(message: Message, attachments: List<AttachmentData> = emptyList()): String {
+    @JvmOverloads
+    fun addMessageWithId(
+        message: Message,
+        attachments: List<AttachmentData> = emptyList(),
+        inReplyTo: String? = null,
+    ): String {
         val (from, to) = when (message.role) {
             MessageRole.USER -> user to agent
             MessageRole.ASSISTANT -> agent to user
             else -> null to user
         }
-        return addMessageInternal(message, from, to, attachments)
+        return addMessageInternal(message, from, to, attachments, inReplyTo)
     }
+
+    /**
+     * [messages] with the identity each is stored under and the message it answers, for readers
+     * that pair replies with questions. Same order and pending-buffer merge as [messages].
+     */
+    val entries: List<ConversationEntry>
+        get() {
+            val dbMessages = repository.getMessages(id)
+            val dbMessageIds = dbMessages.mapTo(HashSet()) { it.messageId }
+            val pending = pendingMessages.filter { it.messageData.messageId !in dbMessageIds }
+            return dbMessages.map { ConversationEntry(it.messageId, it.toMessage(), it.inReplyTo) } +
+                pending.map { ConversationEntry(it.messageData.messageId, it.message, it.messageData.inReplyTo) }
+        }
 
     /**
      * Add a message carrying attached files.
@@ -259,9 +273,10 @@ class StoredConversation(
         message: Message,
         from: StoredUser?,
         to: StoredUser?,
-        attachments: List<AttachmentData> = emptyList()
+        attachments: List<AttachmentData> = emptyList(),
+        inReplyTo: String? = null,
     ): String {
-        val messageData = MessageData.from(message, messageId = UUIDv7.generateString())
+        val messageData = MessageData.from(message, messageId = UUIDv7.generateString()).copy(inReplyTo = inReplyTo)
         // Only AssistantMessage exposes assets; other message roles have none to persist.
         val messageAssets = (message as? AssistantMessage)?.assets.orEmpty()
         val durableAssets = messageAssets.filterIsInstance<DurableAsset>().map {

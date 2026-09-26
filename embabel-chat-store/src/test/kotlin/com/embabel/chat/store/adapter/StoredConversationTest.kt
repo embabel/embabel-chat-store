@@ -106,6 +106,38 @@ class StoredConversationTest {
         return session
     }
 
+    // ==================== Reply ownership ====================
+
+    @Test
+    fun `a reply records the message it answers, while pending and once persisted`() {
+        val release = CountDownLatch(1)
+        val persisted = java.util.concurrent.CopyOnWriteArrayList<SimpleStoredMessage>()
+        whenever(repository.addMessage(eq(sessionId), any(), any(), any(), any())).thenAnswer { call ->
+            release.await(5, TimeUnit.SECONDS)
+            persisted += SimpleStoredMessage(call.getArgument<MessageData>(1))
+            StoredSession(
+                session = SessionData(sessionId = sessionId, title = "Test", createdAt = Instant.now()),
+                owner = user,
+                messages = persisted.toList(),
+            )
+        }
+        whenever(repository.getMessages(sessionId)).thenAnswer { persisted.toList() }
+        val conversation = createConversation(title = "Test")
+
+        val question = conversation.addMessageWithId(UserMessage(content = "Q"))
+        val reply = conversation.addMessageWithId(AssistantMessage(content = "A"), inReplyTo = question)
+
+        val pending = conversation.entries.associate { it.messageId to it.inReplyTo }
+        assertEquals(mapOf(question to null, reply to question), pending)
+        assertEquals(listOf("Q", "A"), conversation.entries.map { it.message.content })
+
+        release.countDown()
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (persisted.size < 2 && System.nanoTime() < deadline) Thread.sleep(10)
+        assertEquals(2, persisted.size)
+        assertEquals(mapOf(question to null, reply to question), conversation.entries.associate { it.messageId to it.inReplyTo })
+    }
+
     // ==================== Pending buffer tests ====================
 
     @Test

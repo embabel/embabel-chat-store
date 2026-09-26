@@ -675,6 +675,26 @@ class ChatSessionRepositoryImplTest {
     }
 
     @Test
+    fun `a reply keeps the message it answers across a reload`() {
+        val sessionId = UUIDv7.generateString()
+        chatSessionRepository.createSession(sessionId, testUser)
+        val question = UUIDv7.generateString()
+        val reply = UUIDv7.generateString()
+        chatSessionRepository.addMessage(
+            sessionId,
+            MessageData(question, MessageRole.USER, "question", Instant.parse("2026-01-01T00:00:00Z")),
+        )
+        chatSessionRepository.addMessage(
+            sessionId,
+            MessageData(reply, MessageRole.ASSISTANT, "answer", Instant.parse("2026-01-01T00:00:01Z"), inReplyTo = question),
+        )
+
+        val messages = chatSessionRepository.getMessages(sessionId).associateBy { it.messageId }
+        assertNull(messages[question]?.inReplyTo, "a message written without a link reads back without one")
+        assertEquals(question, messages[reply]?.inReplyTo)
+    }
+
+    @Test
     fun `narration reports a miss rather than narrating the wrong message`() {
         val sessionId = UUIDv7.generateString()
         chatSessionRepository.createSession(sessionId, testUser)
