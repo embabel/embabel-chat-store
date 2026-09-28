@@ -24,6 +24,8 @@ import com.embabel.chat.event.MessageEvent
 import com.embabel.chat.event.MessageStatus
 import com.embabel.chat.store.embedding.EmbeddingResult
 import com.embabel.chat.store.embedding.MessageEmbedder
+import com.embabel.chat.store.event.MessageEmbeddingFailedEvent
+import com.embabel.chat.store.event.MessagePersistedEvent
 import com.embabel.chat.store.event.SessionEventAwaiter
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.AssetData
@@ -520,6 +522,44 @@ class StoredConversationTest {
         assertEquals("Hello", captor.firstValue.content)
         assertNull(captor.firstValue.embedding)
         assertNull(captor.firstValue.embeddingModel)
+    }
+
+    @Test
+    fun `embedder failure saves the message pending re-embed and publishes a failure event naming it`() {
+        val failure = RuntimeException("embedding endpoint unreachable")
+        runBlocking { whenever(messageEmbedder.embed(any())).thenThrow(failure) }
+        stubAddMessage()
+
+        val conversation = createConversation()
+        val messageId = conversation.addMessageWithId(UserMessage(content = "Hello"))
+
+        val captor = argumentCaptor<MessageData>()
+        verify(repository, timeout(5000)).addMessage(eq(sessionId), captor.capture(), any(), any(), any())
+        // A null model is the marker reembedMessages selects on: coalesce(embeddingModel, '') <> model
+        assertNull(captor.firstValue.embeddingModel)
+        assertNull(captor.firstValue.embedding)
+
+        val events = argumentCaptor<Any>()
+        verify(eventPublisher, timeout(5000).atLeastOnce()).publishEvent(events.capture())
+        val failed = events.allValues.filterIsInstance<MessageEmbeddingFailedEvent>().single()
+        assertEquals(sessionId, failed.sessionId)
+        assertEquals(messageId, failed.messageId)
+        assertEquals(MessageRole.USER, failed.role)
+        assertSame(failure, failed.error)
+    }
+
+    @Test
+    fun `no failure event when the embedder succeeds`() {
+        runBlocking { whenever(messageEmbedder.embed(any())).thenReturn(EmbeddingResult(floatArrayOf(0.1f), "m")) }
+        stubAddMessage(SimpleStoredMessage(MessageData("msg-1", MessageRole.USER, "Hello", Instant.now())))
+
+        createConversation().addMessage(UserMessage(content = "Hello"))
+
+        // MessagePersistedEvent is published after the point a failure event would be.
+        verify(eventPublisher, timeout(5000)).publishEvent(any<MessagePersistedEvent>())
+        val events = argumentCaptor<Any>()
+        verify(eventPublisher, atLeastOnce()).publishEvent(events.capture())
+        assertTrue(events.allValues.none { it is MessageEmbeddingFailedEvent })
     }
 }
 

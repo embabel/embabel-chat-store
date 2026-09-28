@@ -25,6 +25,8 @@ import org.drivine.query.QuerySpecification
 import org.drivine.schema.SimilarityFunction
 import org.drivine.schema.VectorIndexSpec
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -94,6 +96,130 @@ class ChatSessionReembedIntegrationTest {
         assertEquals(0, again.messages)
     }
 
+    @Test
+    fun `a failure mid-reembed restores the index, names the failed message, keeps the rest, and a rerun finishes`() {
+        val poisonId = addMessage("$POISON too long for the model")
+        chatSessionRepository.reembedMessages("narrow", spec(NARROW), constantVectors(NARROW))
+
+        val failure = assertThrows(MessageReembedIncompleteException::class.java) {
+            chatSessionRepository.reembedMessages("wide", spec(WIDE), refusing(WIDE) { POISON in it })
+        }
+
+        assertEquals(listOf(poisonId), failure.failedMessageIds)
+        assertEquals(2, failure.report.messages, "the other messages should have been written")
+        assertTrue(failure.report.indexRecreated)
+        assertFalse(failure.abandoned)
+        assertEquals(0, failure.notAttempted)
+        assertTrue(failure.message.orEmpty().contains(poisonId))
+        assertEquals(WIDE, indexDimensions(), "the index must be remade even though the run failed")
+        assertEquals(2, countAtModel("wide"))
+
+        val rerun = chatSessionRepository.reembedMessages("wide", spec(WIDE), constantVectors(WIDE))
+
+        assertEquals(1, rerun.messages, "only the message that failed is left to do")
+        assertEquals(3, countAtModel("wide"))
+    }
+
+    @Test
+    fun `one oversized message fails only itself`() {
+        repeat(8) { addMessage("filler $it") }
+        val poisonId = addMessage("$POISON oversized")
+        repeat(8) { addMessage("more filler $it") }
+        val calls = mutableListOf<Int>()
+
+        val failure = assertThrows(MessageReembedIncompleteException::class.java) {
+            chatSessionRepository.reembedMessages("wide", spec(WIDE)) { texts ->
+                calls += texts.size
+                refusing(WIDE) { POISON in it }(texts)
+            }
+        }
+
+        assertEquals(listOf(poisonId), failure.failedMessageIds)
+        assertEquals(18, failure.report.messages)
+        assertEquals(18, countAtModel("wide"))
+        assertTrue(calls.contains(1), "the failing batch should have been split down to the single message")
+    }
+
+    @Test
+    fun `a dead embedding service stops within the abandon limit and still restores the index`() {
+        repeat(28) { addMessage("message $it") }
+        chatSessionRepository.reembedMessages("narrow", spec(NARROW), constantVectors(NARROW))
+        var calls = 0
+
+        val failure = assertThrows(MessageReembedIncompleteException::class.java) {
+            chatSessionRepository.reembedMessages("wide", spec(WIDE)) {
+                calls++
+                throw IllegalStateException("service down")
+            }
+        }
+
+        // ceil(log2(200)) + 3
+        assertEquals(11, calls, "should give up after the abandon limit, not probe every message")
+        assertTrue(failure.abandoned)
+        assertEquals(0, failure.report.messages)
+        assertEquals(30, failure.failedMessageIds.size + failure.notAttempted, "every message is accounted for")
+        assertEquals("service down", failure.cause?.message)
+        assertEquals(WIDE, indexDimensions())
+    }
+
+    @Test
+    fun `a vector count that does not match the texts is a failed call, not a partial write`() {
+        val calls = mutableListOf<Int>()
+
+        // Answers with one extra vector for any batch of more than one text.
+        val report = chatSessionRepository.reembedMessages("wide", spec(WIDE)) { texts ->
+            calls += texts.size
+            List(texts.size + if (texts.size > 1) 1 else 0) { List(WIDE) { 0.1 } }
+        }
+
+        assertEquals(2, report.messages)
+        assertEquals(listOf(2, 1, 1), calls, "the mismatched call should be split and retried")
+
+        val failure = assertThrows(MessageReembedIncompleteException::class.java) {
+            chatSessionRepository.reembedMessages("wider", spec(WIDE)) { texts -> List(texts.size + 1) { List(WIDE) { 0.1 } } }
+        }
+        assertEquals(2, failure.failedMessageIds.size)
+        assertTrue(failure.cause is IllegalStateException)
+    }
+
+    @Test
+    fun `a message saved without a vector after a failed embed is picked up by the next re-embed`() {
+        chatSessionRepository.reembedMessages("wide", spec(WIDE), constantVectors(WIDE))
+        // As StoredConversation saves a message whose embedding failed: no vector, no model.
+        val pendingId = addMessage("embedding failed on save")
+
+        val embedded = mutableListOf<String>()
+        val report = chatSessionRepository.reembedMessages("wide", spec(WIDE)) { texts ->
+            embedded += texts
+            constantVectors(WIDE)(texts)
+        }
+
+        assertEquals(1, report.messages)
+        assertEquals(listOf("embedding failed on save"), embedded)
+        assertEquals(3, countAtModel("wide"))
+        assertTrue(pendingId.isNotEmpty())
+    }
+
+    private fun addMessage(content: String): String {
+        val id = UUID.randomUUID().toString()
+        chatSessionRepository.addMessage(sessionId, MessageData(id, MessageRole.USER, content, Instant.now()))
+        return id
+    }
+
+    /** Vectors for every batch, except that a batch holding a text matching [refuse] fails. */
+    private fun refusing(dimensions: Int, refuse: (String) -> Boolean): (List<String>) -> List<List<Double>> =
+        { texts ->
+            if (texts.any(refuse)) throw IllegalArgumentException("input too long")
+            texts.map { List(dimensions) { 0.1 } }
+        }
+
+    private fun countAtModel(model: String): Int = persistenceManager.getOne(
+        QuerySpecification
+            .withStatement("MATCH (m:StoredMessage) WHERE m.embeddingModel = \$model RETURN count(m)")
+            .bind(mapOf("model" to model))
+            .transform(Long::class.java),
+    ).toInt()
+
     private fun spec(dimensions: Int) = VectorIndexSpec(
         label = "StoredMessage",
         property = "embedding",
@@ -126,5 +252,6 @@ class ChatSessionReembedIntegrationTest {
     private companion object {
         const val NARROW = 4
         const val WIDE = 8
+        const val POISON = "POISON"
     }
 }

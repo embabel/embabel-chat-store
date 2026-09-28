@@ -16,6 +16,7 @@
 package com.embabel.chat.store.autoconfigure
 
 import com.embabel.chat.store.repository.ChatSessionRepository
+import com.embabel.chat.store.repository.MessageReembedIncompleteException
 import com.embabel.chat.store.repository.MessageReembedReport
 import com.embabel.common.ai.model.EmbeddingService
 import org.drivine.schema.VectorIndexSpec
@@ -46,6 +47,12 @@ class MessageReembedder(
      * Takes the SERVICE rather than a name and a width, because asking it twice invites the two to
      * disagree: a host that read the name before a swap and the width after would write one
      * model's name onto another model's vectors.
+     *
+     * Batches go through the repository's isolating path: a failed call is split down to single
+     * messages, so one bad message fails only itself.
+     *
+     * @throws MessageReembedIncompleteException when some messages could not be embedded — thrown
+     * after the index is restored, naming them. Calling this again retries only what is pending.
      */
     fun reembed(embeddingService: EmbeddingService): MessageReembedReport =
         repository.reembedMessages(

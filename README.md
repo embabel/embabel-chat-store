@@ -295,6 +295,16 @@ The embedding is stored as two properties on the `:StoredMessage` node:
 `embedding` and `embeddingModel` are both nullable. Messages without an embedding
 (failure, no embedder configured, SYSTEM/blank content) just have null values.
 
+When embedding a message fails, the message is still saved, with a null `embeddingModel`, a
+WARN is logged with its id, and a `MessageEmbeddingFailedEvent` (session id, message id, role,
+cause) is published once the write lands. A null model is what `reembedMessages` selects on, so
+the retry is a re-embed run with the current model — `MessageReembedder.reembed(embeddingService)`
+— triggered from a listener for that event or on a schedule. A run only embeds what is pending.
+
+`reembedMessages` splits a failing embed call down to single messages, writes everything that
+embeds, always remakes the message index, and then throws `MessageReembedIncompleteException`
+naming the messages that failed (and, if it gave up on a dead service, how many it never tried).
+
 ### Embedder Configuration
 
 The auto-configuration wires a default embedder when an embabel `Ai` bean is available:

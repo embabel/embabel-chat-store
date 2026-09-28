@@ -82,10 +82,15 @@ open class ChatSessionRepositoryImpl(
      * session and waits on the schema locks an open data transaction holds, while that transaction
      * waits to commit. Doing exactly this inside a transactional method deadlocked dice's
      * equivalent — the request never returned and the index was left dropped (embabel/dice#117).
-     * So the DDL sits either side, and only the rewrite is transactional.
+     * So the DDL sits either side of the rewrite.
      *
      * Drop before rewriting rather than remake after: an index left standing through the run
-     * spends it describing a width none of the rewritten vectors have.
+     * spends it describing a width none of the rewritten vectors have. The remake is unconditional
+     * once dropped — it runs whether the rewrite succeeded, stopped short, or threw — so no outcome
+     * leaves message search without an index.
+     *
+     * @throws MessageReembedIncompleteException after the index is restored, when some messages
+     * could not be embedded; everything else was written
      */
     override fun reembedMessages(
         modelName: String,
@@ -100,58 +105,59 @@ open class ChatSessionRepositoryImpl(
             logger.info("Message embedding shape changed; dropping {} and remaking it after the re-embed", spec.effectiveName)
             persistenceManager.indexes.drop(spec)
         }
-        val rewritten = rewriteMessageEmbeddings(modelName, embed)
-        if (shapeChanged) persistenceManager.indexes.ensure(spec)
+        val outcome = runCatching { rewriteMessageEmbeddings(modelName, embed) }
+        val failure = outcome.exceptionOrNull()?.let { e ->
+            if (e is MessageReembedIncompleteException) e.withIndexRecreated(shapeChanged) else e
+        }
+        if (shapeChanged) restoreIndex(spec, failure)
+        if (failure != null) {
+            logger.warn("reembedMessages incomplete: model={} indexRecreated={}: {}", modelName, shapeChanged, failure.message)
+            throw failure
+        }
+        val rewritten = outcome.getOrThrow()
         logger.info("reembedMessages done: messages={} model={} indexRecreated={}", rewritten, modelName, shapeChanged)
         return MessageReembedReport(messages = rewritten, indexRecreated = shapeChanged)
     }
 
     /**
-     * Rewrite every message vector not already made by [modelName], in pages.
-     *
-     * Paged rather than loaded whole: a busy world's message history is the largest thing in this
-     * store, and one `embed` call per page bounds both the request size and the memory held.
-     * Messages already at the current model are filtered in Cypher, so a resumed run does no work
-     * for what it already did.
+     * Remake the message index. A failure here while the rewrite already failed is attached to
+     * that failure rather than replacing it; alone, it is thrown.
      */
-    @Transactional
+    private fun restoreIndex(spec: VectorIndexSpec, pending: Throwable?) {
+        try {
+            persistenceManager.indexes.ensure(spec)
+        } catch (e: Exception) {
+            logger.error("Could not remake message vector index {} after re-embed", spec.effectiveName, e)
+            if (pending == null) throw e
+            pending.addSuppressed(e)
+        }
+    }
+
+    private fun MessageReembedIncompleteException.withIndexRecreated(indexRecreated: Boolean) =
+        MessageReembedIncompleteException(
+            failedMessageIds = failedMessageIds,
+            notAttempted = notAttempted,
+            report = report.copy(indexRecreated = indexRecreated),
+            abandoned = abandoned,
+            cause = cause,
+        )
+
+    /**
+     * Rewrite every message vector not already made by [modelName], in pages; see
+     * [MessageReembedRun] for how failed embed calls are isolated and when a run gives up.
+     *
+     * NOT `@Transactional`. It carried the annotation once, but [reembedMessages] calls it on
+     * `this`, so the proxy never saw the call and it never applied. It is removed rather than made
+     * to work: one transaction around the whole rewrite would roll back every page before a failure
+     * and hold a busy history's writes open at once, and each page committing on its own is what
+     * lets a rerun resume where a failed one stopped.
+     *
+     * @throws MessageReembedIncompleteException when any message was left pending
+     */
     protected open fun rewriteMessageEmbeddings(
         modelName: String,
         embed: (List<String>) -> List<List<Double>>,
-    ): Int {
-        var total = 0
-        while (true) {
-            val page = persistenceManager.query(
-                QuerySpecification
-                    .withStatement(
-                        """
-                        MATCH (m:StoredMessage)
-                        WHERE m.content IS NOT NULL AND m.content <> ''
-                          AND coalesce(m.embeddingModel, '') <> ${'$'}model
-                        RETURN { messageId: m.messageId, content: m.content }
-                        LIMIT ${'$'}limit
-                        """.trimIndent(),
-                    )
-                    .bind(mapOf("model" to modelName, "limit" to REEMBED_PAGE_SIZE))
-                    .transform(MessageText::class.java),
-            )
-            if (page.isEmpty()) break
-            val ids = page.map { it.messageId }
-            val vectors = embed(page.map { it.content })
-            persistenceManager.executeBatch(
-                ids.mapIndexed { i, id ->
-                    QuerySpecification
-                        .withStatement(
-                            "MATCH (m:StoredMessage {messageId: ${'$'}id}) " +
-                                "SET m.embedding = ${'$'}embedding, m.embeddingModel = ${'$'}model",
-                        )
-                        .bind(mapOf("id" to id, "embedding" to vectors[i], "model" to modelName))
-                },
-            )
-            total += ids.size
-        }
-        return total
-    }
+    ): Int = MessageReembedRun(persistenceManager, modelName, embed, REEMBED_PAGE_SIZE).execute()
 
     @Transactional
     override fun createSession(sessionId: String, owner: StoredUser, title: String?): StoredSession {

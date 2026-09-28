@@ -24,6 +24,8 @@ import com.embabel.chat.Message
 import com.embabel.chat.MessageRole
 import com.embabel.chat.event.MessageEvent
 import com.embabel.chat.store.embedding.MessageEmbedder
+import com.embabel.chat.store.event.MessageEmbeddingFailedEvent
+import kotlin.coroutines.cancellation.CancellationException
 import com.embabel.chat.store.event.MessagePersistedEvent
 import com.embabel.chat.store.event.SessionEventAwaiter
 import com.embabel.chat.store.model.AttachmentData
@@ -80,8 +82,10 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *   failing immediately if the session doesn't exist yet.
  * @param messageEmbedder optional embedder invoked inline within the async persistence
  *   coroutine. When configured, the embedding is computed before the single DB write so
- *   the message lands with its vector in one round-trip. Embedding failures are caught
- *   and the message is persisted with a null embedding — messages are never lost. When
+ *   the message lands with its vector in one round-trip. Embedding failures are logged
+ *   and the message is persisted with a null embedding and null `embeddingModel` — messages
+ *   are never lost — then a [MessageEmbeddingFailedEvent] is published; a later
+ *   [ChatSessionRepository.reembedMessages] run picks such messages up. When
  *   null, messages persist without any embedding (same behaviour as before vector
  *   embedding was introduced).
  * @param scope coroutine scope for async operations (defaults to IO dispatcher with SupervisorJob)
@@ -305,10 +309,10 @@ class StoredConversation(
         // consistent reads while the write is in flight.
         scope.launch {
             try {
-                val messageDataForDb = embedMessageData(message, messageData)
+                val embedded = embedMessageData(message, messageData)
                 val updatedSession = addMessageWithAwait(
                     id,
-                    messageDataForDb,
+                    embedded.messageData,
                     from,
                     to,
                     signal,
@@ -318,6 +322,7 @@ class StoredConversation(
 
                 // Persisted — remove from pending buffer (DB is now the source of truth)
                 pendingMessages.remove(pendingMessage)
+                embedded.failure?.let { publishEmbeddingFailed(messageData, message.role, it) }
 
                 // PERSISTED event
                 try {
@@ -377,23 +382,43 @@ class StoredConversation(
     }
 
     /**
-     * Return [messageData] with the embedding fields populated, or the original
-     * unchanged if the embedder declined or failed. Embedding failure is never
-     * fatal: the message is always persisted, with a null embedding if needed.
+     * Return [messageData] with the embedding fields populated, or the original unchanged if the
+     * embedder declined or failed. Embedding failure is never fatal: a chat message outweighs its
+     * vector, so it is persisted without one — but NOT silently. The failure is logged here and
+     * carried back so a [MessageEmbeddingFailedEvent] can be published once the write lands.
+     *
+     * The message is stored with a null `embeddingModel`, which is the pending marker
+     * [ChatSessionRepository.reembedMessages] already selects on, so a re-embed run retries it.
      */
-    private suspend fun embedMessageData(message: Message, messageData: MessageData): MessageData {
-        val embedder = messageEmbedder ?: return messageData
+    private suspend fun embedMessageData(message: Message, messageData: MessageData): EmbeddedMessageData {
+        val embedder = messageEmbedder ?: return EmbeddedMessageData(messageData)
         return try {
-            val result = embedder.embed(message) ?: return messageData
-            messageData.copy(embedding = result.vector, embeddingModel = result.model)
+            val result = embedder.embed(message) ?: return EmbeddedMessageData(messageData)
+            EmbeddedMessageData(messageData.copy(embedding = result.vector, embeddingModel = result.model))
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             logger.warn(
-                "Embedding failed for message {} in session {}: {}",
+                "Embedding failed for message {} in session {}; saving it without a vector, pending re-embed: {}",
                 messageData.messageId, id, e.message, e
             )
-            messageData
+            EmbeddedMessageData(messageData.copy(embedding = null, embeddingModel = null), failure = e)
         }
     }
+
+    private fun publishEmbeddingFailed(messageData: MessageData, role: MessageRole, failure: Exception) {
+        try {
+            eventPublisher?.publishEvent(MessageEmbeddingFailedEvent(id, messageData.messageId, role, failure))
+        } catch (e: Exception) {
+            logger.error("Failed to publish embedding-failure event for message {} in session {}", messageData.messageId, id, e)
+        }
+    }
+
+    /** The data to persist, and the embedding failure (if any) to report once it is persisted. */
+    private data class EmbeddedMessageData(
+        val messageData: MessageData,
+        val failure: Exception? = null,
+    )
 
     /**
      * Attempt to add a message, waiting for the session to be created if it doesn't exist yet.
