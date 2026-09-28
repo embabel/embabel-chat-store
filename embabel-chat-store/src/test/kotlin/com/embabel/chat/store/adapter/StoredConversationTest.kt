@@ -232,7 +232,11 @@ class StoredConversationTest {
     @Test
     fun `assistant durable assets are visible while pending and persisted with the message`() {
         val persistenceLatch = CountDownLatch(1)
+        // Persistence waits until the test has read the pending message: once it completes, the
+        // message leaves the pending buffer and the mocked repository returns no messages.
+        val pendingRead = CountDownLatch(1)
         whenever(repository.addMessageWithAssets(eq(sessionId), any(), any(), any(), any(), any())).thenAnswer {
+            pendingRead.await(5, TimeUnit.SECONDS)
             val messageData = it.getArgument<MessageData>(1)
             val assets = it.getArgument<List<AssetData>>(5)
             persistenceLatch.countDown()
@@ -257,6 +261,7 @@ class StoredConversationTest {
 
         val pending = conversation.messages.single() as AssistantMessage
         assertEquals(listOf(asset), pending.assets)
+        pendingRead.countDown()
         assertTrue(persistenceLatch.await(5, TimeUnit.SECONDS))
         val assetsCaptor = argumentCaptor<List<AssetData>>()
         verify(repository, timeout(5000)).addMessageWithAssets(
