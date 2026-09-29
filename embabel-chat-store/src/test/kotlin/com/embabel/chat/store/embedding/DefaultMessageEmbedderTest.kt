@@ -32,7 +32,7 @@ import org.mockito.kotlin.whenever
 class DefaultMessageEmbedderTest {
 
     @Test
-    fun `delegates to embedding service and stores its name on the result`() = runBlocking {
+    fun `delegates to embedding service and stores its name on the result`() = runBlocking<Unit> {
         val vector = floatArrayOf(0.1f, 0.2f, 0.3f)
         val service = mock<EmbeddingService>()
         whenever(service.name).thenReturn("text-embedding-3-small")
@@ -45,7 +45,7 @@ class DefaultMessageEmbedderTest {
     }
 
     @Test
-    fun `skips blank content without calling the embedding service`() = runBlocking {
+    fun `skips blank content without calling the embedding service`() = runBlocking<Unit> {
         val service = mock<EmbeddingService>()
 
         val result = DefaultMessageEmbedder(service).embed(UserMessage("   \n  "))
