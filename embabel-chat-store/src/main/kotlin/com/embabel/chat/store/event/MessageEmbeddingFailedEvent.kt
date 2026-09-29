@@ -16,7 +16,6 @@
 package com.embabel.chat.store.event
 
 import com.embabel.chat.MessageRole
-import com.embabel.common.core.types.Timestamped
 import java.time.Instant
 
 /**
@@ -31,8 +30,7 @@ import java.time.Instant
  * it after a burst of these is cheap.
  *
  * Published once the message has been written, through Spring's `ApplicationEventPublisher`, like
- * the other chat store events. Deliberately NOT a [ChatStoreEvent]: that interface is sealed, and a
- * new subtype would break every exhaustive `when` a caller has already compiled against it.
+ * the other chat store events.
  *
  * @param sessionId the session the message belongs to
  * @param messageId the message saved without a vector
@@ -45,4 +43,4 @@ data class MessageEmbeddingFailedEvent @JvmOverloads constructor(
     val role: MessageRole,
     val error: Throwable,
     override val timestamp: Instant = Instant.now(),
-) : Timestamped
+) : ChatStoreEvent
