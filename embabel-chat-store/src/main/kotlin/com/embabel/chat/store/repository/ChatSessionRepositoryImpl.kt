@@ -345,8 +345,8 @@ open class ChatSessionRepositoryImpl(
     private fun storedSessionOrders(order: SessionOrder): List<OrderSpec> {
         val session = StoredSessionQueryDsl.INSTANCE.session
         return when (order) {
-            SessionOrder.CREATED -> listOf(session.sessionId.desc())
-            SessionOrder.LAST_ACTIVITY -> listOf(session.lastActivityAt.desc(), session.sessionId.desc())
+            SessionOrder.CREATED -> listOf(session.sessionId.descending())
+            SessionOrder.LAST_ACTIVITY -> listOf(session.lastActivityAt.descending(), session.sessionId.descending())
         }
     }
 
@@ -354,8 +354,8 @@ open class ChatSessionRepositoryImpl(
     private fun sessionSummaryOrders(order: SessionOrder): List<OrderSpec> {
         val session = SessionSummaryQueryDsl.INSTANCE.session
         return when (order) {
-            SessionOrder.CREATED -> listOf(session.sessionId.desc())
-            SessionOrder.LAST_ACTIVITY -> listOf(session.lastActivityAt.desc(), session.sessionId.desc())
+            SessionOrder.CREATED -> listOf(session.sessionId.descending())
+            SessionOrder.LAST_ACTIVITY -> listOf(session.lastActivityAt.descending(), session.sessionId.descending())
         }
     }
 

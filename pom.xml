@@ -22,7 +22,7 @@
     </modules>
 
     <properties>
-        <drivine.version>0.0.85</drivine.version>
+        <drivine.version>0.0.87</drivine.version>
         <embabel-common.version>2.0.3</embabel-common.version>
         <embabel-agent.version>1.5.3-SNAPSHOT</embabel-agent.version>
         <!-- Overrides the parent's default (2.2.21): the Drivine KSP-generated DSL uses context
