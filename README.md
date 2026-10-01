@@ -69,6 +69,27 @@ message to a stored conversation.
 Deleting a session deletes its `StoredAsset` metadata nodes. It does not delete externally stored
 content; retention and content deletion remain the responsibility of the corresponding `AssetStore`.
 
+## Multimodal User Messages
+
+`StoredConversation` preserves the ordered `ContentPart` list of multimodal `UserMessage`
+instances, including text, image, and document parts. Image and document bytes are Base64-encoded inline
+in `StoredContentPart` nodes connected to the message through `HAS_CONTENT_PART`:
+
+```kotlin
+val message = UserMessage(
+    parts = listOf(
+        TextPart("Summarize this document"),
+        DocumentPart("application/pdf", pdfBytes, "report.pdf"),
+    ),
+)
+conversation.addMessage(message)
+```
+
+Inline storage is required because agent-api content parts carry bytes rather than durable storage
+references. For large files that are already stored externally, use `AttachmentData` so the graph
+contains only metadata and an opaque `storageUri`. Existing text-only message nodes remain readable;
+when no `HAS_CONTENT_PART` relationships exist, the stored `content` property is used as before.
+
 ## Message Events
 
 Subscribe to message lifecycle events for real-time updates:

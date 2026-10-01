@@ -18,6 +18,7 @@ package com.embabel.chat.store.repository
 import com.embabel.chat.store.event.SessionCreatedEvent
 import com.embabel.chat.store.model.AttachmentData
 import com.embabel.chat.store.model.AssetData
+import com.embabel.chat.store.model.ContentPartData
 import com.embabel.chat.store.model.AttributedMessage
 import com.embabel.chat.store.model.DeletableSession
 import com.embabel.chat.store.model.MessageData
@@ -217,6 +218,25 @@ open class ChatSessionRepositoryImpl(
         assets = assets,
     )
 
+    @Transactional
+    override fun addMessageWithContentParts(
+        sessionId: String,
+        messageData: MessageData,
+        author: StoredUser?,
+        recipient: StoredUser?,
+        attachments: List<AttachmentData>,
+        assets: List<AssetData>,
+        contentParts: List<ContentPartData>,
+    ): StoredSession = addMessageInternal(
+        sessionId = sessionId,
+        messageData = messageData,
+        author = author,
+        recipient = recipient,
+        attachments = attachments,
+        assets = assets,
+        contentParts = contentParts,
+    )
+
     private fun createSessionWithMessageInternal(
         sessionId: String,
         owner: StoredUser,
@@ -402,6 +422,7 @@ open class ChatSessionRepositoryImpl(
         recipient = recipient,
         attachments = attachments,
         assets = emptyList(),
+        contentParts = emptyList(),
     )
 
     @Transactional
@@ -419,6 +440,7 @@ open class ChatSessionRepositoryImpl(
         recipient = recipient,
         attachments = attachments,
         assets = assets,
+        contentParts = emptyList(),
     )
 
     private fun addMessageInternal(
@@ -428,10 +450,11 @@ open class ChatSessionRepositoryImpl(
         recipient: StoredUser?,
         attachments: List<AttachmentData>,
         assets: List<AssetData>,
+        contentParts: List<ContentPartData>,
     ): StoredSession {
         logger.debug(
-            "Adding message {} to session {} ({} attachments, {} assets)",
-            messageData.messageId, sessionId, attachments.size, assets.size,
+            "Adding message {} to session {} ({} attachments, {} assets, {} content parts)",
+            messageData.messageId, sessionId, attachments.size, assets.size, contentParts.size,
         )
 
         // Verify the session exists and advance its activity in a single statement — MERGE on
@@ -450,6 +473,7 @@ open class ChatSessionRepositoryImpl(
                 recipient = recipient?.let { UserRef(it.id) },
                 attachments = attachments,
                 assets = assets,
+                contentParts = contentParts,
             )
         )
         graphObjectManager.save(newMessage, CascadeType.PRESERVE)
