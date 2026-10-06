@@ -120,12 +120,16 @@ class StoredConversation(
     /**
      * Messages loaded from the repository, merged with any pending (not yet persisted) messages.
      * Pending messages that have already appeared in the DB result are deduplicated by messageId.
+     *
+     * Pending is snapshotted before the DB read: a message persisted during the read leaves the
+     * pending buffer, so reading pending afterwards would miss it in both places.
      */
     override val messages: List<Message>
         get() {
+            val pendingSnapshot = pendingMessages.toList()
             val dbMessages = repository.getMessages(id)
             val dbMessageIds = dbMessages.mapTo(HashSet()) { it.messageId }
-            val pending = pendingMessages.filter { it.messageData.messageId !in dbMessageIds }
+            val pending = pendingSnapshot.filter { it.messageData.messageId !in dbMessageIds }
             return dbMessages.map { it.toMessage() } + pending.map { it.message }
         }
 
