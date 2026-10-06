@@ -46,6 +46,7 @@ import org.mockito.ArgumentCaptor
 import org.mockito.kotlin.any
 import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.atLeastOnce
+import org.mockito.kotlin.doAnswer
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
@@ -227,6 +228,36 @@ class StoredConversationTest {
         assertEquals("Third", messages[2].content)
 
         latch.countDown()
+    }
+
+    @Test
+    fun `message persisted while messages is reading the DB is still returned`() {
+        // Persistence starts only once the read is inside the DB call, and the DB call returns
+        // only once persistence has removed the message from the pending buffer. The DB result
+        // therefore predates the write, and the pending buffer is empty after it.
+        val dbReadStarted = CountDownLatch(1)
+        val persisted = CountDownLatch(1)
+        whenever(repository.addMessage(eq(sessionId), any(), any(), any(), any())).thenAnswer {
+            dbReadStarted.await(5, TimeUnit.SECONDS)
+            StoredSession(
+                session = SessionData(sessionId = sessionId, title = "Test", createdAt = Instant.now()),
+                owner = user,
+                messages = listOf(SimpleStoredMessage(it.getArgument(1))),
+            )
+        }
+        doAnswer {
+            if (it.getArgument<Any>(0) is MessagePersistedEvent) persisted.countDown()
+        }.whenever(eventPublisher).publishEvent(any<Any>())
+        whenever(repository.getMessages(sessionId)).thenAnswer {
+            dbReadStarted.countDown()
+            assertTrue(persisted.await(5, TimeUnit.SECONDS))
+            emptyList<SimpleStoredMessage>()
+        }
+        val conversation = createConversation()
+
+        conversation.addMessage(UserMessage(content = "What was the last email we sent them?"))
+
+        assertEquals(listOf("What was the last email we sent them?"), conversation.messages.map { it.content })
     }
 
     @Test
