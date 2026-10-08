@@ -17,10 +17,14 @@ package com.embabel.chat.store.adapter
 
 import com.embabel.chat.AssistantMessage
 import com.embabel.chat.DurableAsset
+import com.embabel.chat.DocumentPart
+import com.embabel.chat.ImagePart
 import com.embabel.chat.MessageRole
 import com.embabel.chat.SystemMessage
+import com.embabel.chat.TextPart
 import com.embabel.chat.UserMessage
 import com.embabel.chat.store.model.AssetData
+import com.embabel.chat.store.model.ContentPartData
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.SimpleStoredMessage
 import com.embabel.chat.store.model.StoredUser
@@ -32,6 +36,51 @@ import java.time.Instant
  * Tests for MessageData and SimpleStoredMessage conversion methods.
  */
 class MessageDataConversionTest {
+
+    @Test
+    fun `multimodal user content parts round trip in their original order`() {
+        val timestamp = Instant.parse("2026-09-24T00:00:00Z")
+        val original = UserMessage(
+            parts = listOf(
+                TextPart("Describe these files"),
+                ImagePart("image/png", byteArrayOf(1, 2, 3)),
+                DocumentPart("application/pdf", byteArrayOf(4, 5, 6), "report.pdf"),
+            ),
+            timestamp = timestamp,
+        )
+        val messageData = MessageData.from(original, "msg-1")
+        val storedParts = original.parts.mapIndexed { position, part ->
+            ContentPartData.from(part, messageData.messageId, position)
+        }
+
+        val restored = messageData.toMessage(contentParts = storedParts.reversed()) as UserMessage
+
+        assertEquals(original.parts, restored.parts)
+        assertEquals(original.content, restored.content)
+        assertEquals(timestamp, restored.timestamp)
+    }
+
+    @Test
+    fun `stored message restores multimodal user content parts`() {
+        val parts = listOf(
+            ContentPartData.from(TextPart("Look at this"), "msg-1", 0),
+            ContentPartData.from(ImagePart("image/jpeg", byteArrayOf(7, 8)), "msg-1", 1),
+        )
+        val stored = SimpleStoredMessage(
+            message = MessageData(
+                messageId = "msg-1",
+                role = MessageRole.USER,
+                content = "Look at this",
+                createdAt = Instant.now(),
+            ),
+            contentParts = parts,
+        )
+
+        val restored = stored.toMessage() as UserMessage
+
+        assertEquals(parts.map { it.toContentPart() }, restored.parts)
+        assertTrue(restored.isMultimodal)
+    }
 
     @Test
     fun `AssetData round trips DurableAsset metadata`() {

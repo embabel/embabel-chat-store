@@ -61,4 +61,8 @@ data class DeletableMessage(
      */
     @GraphRelationship(type = "HAS_ASSET", direction = Direction.OUTGOING)
     val assets: List<AssetData> = emptyList(),
+
+    /** Inline multimodal content owned by this message. */
+    @GraphRelationship(type = "HAS_CONTENT_PART", direction = Direction.OUTGOING)
+    val contentParts: List<ContentPartData> = emptyList(),
 )
