@@ -83,6 +83,9 @@ class StoredConversationFactory @JvmOverloads constructor(
     /**
      * Create a conversation with no default participants.
      *
+     * The backing session must already exist. This method has no owner to use
+     * for session creation; call [ChatSessionRepository.createSession] first.
+     *
      * Use [StoredConversation.addMessageFromTo] to specify from/to per message.
      */
     override fun create(id: String): Conversation {
@@ -120,6 +123,11 @@ class StoredConversationFactory @JvmOverloads constructor(
     /**
      * Create a conversation for a 1-1 chat between a user and an agent.
      *
+     * Creates the backing session if it does not exist yet. An existing session
+     * may be reused only by its owner; its stored title is preserved. The
+     * session is available before this method returns, so the first message
+     * can be persisted without a separate [ChatSessionRepository.createSession] call.
+     *
      * Messages are automatically attributed based on role:
      * - USER messages: from=[user], to=[agent]
      * - ASSISTANT messages: from=[agent], to=[user]
@@ -129,7 +137,8 @@ class StoredConversationFactory @JvmOverloads constructor(
      * @param user the human user participant (must be a StoredUser for persistence)
      * @param agent the AI/system user participant (optional, must be a StoredUser if provided)
      * @param title the session title (included in events for UI display)
-     * @throws IllegalArgumentException if user or agent is not a StoredUser
+     * @throws IllegalArgumentException if a participant is not a StoredUser or
+     *   the session ID belongs to another user
      */
     override fun createForParticipants(
         id: String,
@@ -143,7 +152,12 @@ class StoredConversationFactory @JvmOverloads constructor(
             it as? StoredUser
                 ?: throw IllegalArgumentException("agent must be a StoredUser for persistence. Got: ${it::class.simpleName}")
         }
-        return createInternal(id, sessionUser, sessionAgent, title)
+        val session = repository.findBySessionId(id).orElse(null)
+            ?: repository.createSession(id, sessionUser, title)
+        require(session.owner.id == sessionUser.id) {
+            "Session $id belongs to a different user"
+        }
+        return createInternal(id, sessionUser, sessionAgent, session.session.title)
     }
 
     private fun createInternal(

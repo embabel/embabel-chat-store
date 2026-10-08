@@ -124,8 +124,9 @@ Messages have explicit sender and recipient:
 For multi-user or multi-agent scenarios, use `addMessageFromTo` for explicit routing:
 
 ```kotlin
-// Create conversation without default participants
-val conversation = factory.create(sessionId)
+// A multi-party conversation needs an explicit session owner.
+chatSessionRepository.createSession(sessionId, owner = alice, title = "Group chat")
+val conversation = factory.create(sessionId) as StoredConversation
 
 // Group chat with multiple users
 conversation.addMessageFromTo(UserMessage("Hi everyone!"), from = alice, to = bob)
