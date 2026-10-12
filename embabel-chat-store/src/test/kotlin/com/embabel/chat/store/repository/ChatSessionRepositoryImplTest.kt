@@ -25,6 +25,7 @@ import com.embabel.chat.store.util.UUIDv7
 import org.drivine.StaleObjectException
 import org.drivine.manager.PersistenceManager
 import org.drivine.manager.StatelessGraphObjectManager
+import org.drivine.model.Stamps
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
@@ -567,6 +568,163 @@ class ChatSessionRepositoryImplTest {
         assertThrows(StaleObjectException::class.java) {
             graphObjectManager.save(loadedBefore.copy(content = "Written over the narration"))
         }
+        assertEquals("spoken form", chatSessionRepository.getMessages(sessionId).single().narration)
+    }
+
+    @Test
+    fun `a save of a session loaded before the activity backfill is refused`() {
+        val sessionId = UUID.randomUUID().toString()
+        chatSessionRepository.createSession(sessionId, testUser, "Original Title")
+        // Cypher that does not replace the stamp, so that the backfill is what does.
+        persistenceManager.execute(
+            QuerySpecification.withStatement(
+                "MATCH (s:ChatSession {sessionId: \$id}) SET s.lastActivityAt = null"
+            ).bind(mapOf("id" to sessionId))
+        )
+        val loadedBefore = chatSessionRepository.findBySessionId(sessionId).get().session
+
+        SessionActivityMigration(persistenceManager).migrate()
+
+        assertThrows(StaleObjectException::class.java) {
+            graphObjectManager.save(loadedBefore.copy(title = "Written over the backfill"))
+        }
+        assertEquals("Original Title", chatSessionRepository.findBySessionId(sessionId).get().session.title)
+    }
+
+    @Test
+    fun `a session stored before stamps loads without one, and a title update gives it one`() {
+        val sessionId = UUID.randomUUID().toString()
+        chatSessionRepository.createSession(sessionId, testUser, "Original Title")
+        removeStamp("ChatSession", "sessionId", sessionId)
+        assertNull(chatSessionRepository.findBySessionId(sessionId).get().session.stamp)
+
+        chatSessionRepository.updateSessionTitle(sessionId, "Updated Title")
+
+        val updated = chatSessionRepository.findBySessionId(sessionId).get().session
+        assertEquals("Updated Title", updated.title)
+        assertNotNull(updated.stamp)
+    }
+
+    @Test
+    fun `a session stored before stamps is given one when a message is added`() {
+        val sessionId = UUID.randomUUID().toString()
+        chatSessionRepository.createSession(sessionId, testUser, "Unstamped")
+        removeStamp("ChatSession", "sessionId", sessionId)
+
+        val message = MessageData(UUIDv7.generateString(), MessageRole.USER, "hello", Instant.now())
+        val updated = chatSessionRepository.addMessage(sessionId, message, testUser)
+
+        assertNotNull(updated.session.stamp)
+    }
+
+    @Test
+    fun `a message stored before stamps loads without one, and narrating it gives it one`() {
+        val sessionId = UUID.randomUUID().toString()
+        val message = MessageData(UUIDv7.generateString(), MessageRole.ASSISTANT, "hello", Instant.now())
+        chatSessionRepository.createSessionWithMessage(sessionId, testUser, "Unstamped", message, null, null)
+        removeStamp("StoredMessage", "messageId", message.messageId)
+        assertNull(chatSessionRepository.getMessages(sessionId).single().message.stamp)
+
+        assertTrue(chatSessionRepository.updateMessageNarration(sessionId, message.messageId, "spoken form"))
+
+        val narrated = chatSessionRepository.getMessages(sessionId).single()
+        assertEquals("spoken form", narrated.narration)
+        assertNotNull(narrated.message.stamp)
+    }
+
+    /** Leaves the node as one stored before stamps were kept: with no stamp property. */
+    private fun removeStamp(label: String, idProperty: String, id: String) {
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement("MATCH (n:$label {$idProperty: \$id}) REMOVE n.${Stamps.QUOTED}")
+                .bind(mapOf("id" to id))
+        )
+    }
+
+    @Test
+    fun `a title update writes the title alone and replaces the stamp`() {
+        val sessionId = UUID.randomUUID().toString()
+        val message = MessageData(UUIDv7.generateString(), MessageRole.USER, "hello", Instant.now())
+        chatSessionRepository.createSessionWithMessage(sessionId, testUser, "Original Title", message, testUser, null)
+        val before = chatSessionRepository.findBySessionId(sessionId).get()
+
+        chatSessionRepository.updateSessionTitle(sessionId, "Updated Title")
+
+        val after = chatSessionRepository.findBySessionId(sessionId).get()
+        assertEquals("Updated Title", after.session.title)
+        assertEquals(before.session.createdAt, after.session.createdAt)
+        assertEquals(before.session.lastActivityAt, after.session.lastActivityAt)
+        assertEquals(testUser.id, after.owner.id)
+        assertEquals(before.messages, after.messages)
+        // The title is a property of the session node, so a session loaded before it changed is stale.
+        assertNotEquals(before.session.stamp, after.session.stamp)
+        assertThrows(StaleObjectException::class.java) {
+            graphObjectManager.save(before.session.copy(title = "Written over the new title"))
+        }
+    }
+
+    @Test
+    fun `a title update of a session that does not exist is refused`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            chatSessionRepository.updateSessionTitle("nonexistent-session", "Title")
+        }
+    }
+
+    @Test
+    @Suppress("DEPRECATION")
+    fun `the deprecated narration narrates the latest un-narrated assistant message and writes nothing else`() {
+        val sessionId = UUIDv7.generateString()
+        chatSessionRepository.createSession(sessionId, testUser)
+        val narratedAlready = UUIDv7.generateString()
+        val fromUser = UUIDv7.generateString()
+        val latest = UUIDv7.generateString()
+        chatSessionRepository.addMessage(
+            sessionId,
+            MessageData(narratedAlready, MessageRole.ASSISTANT, "first", Instant.parse("2026-01-01T00:00:00Z")),
+        )
+        chatSessionRepository.addMessage(
+            sessionId,
+            MessageData(fromUser, MessageRole.USER, "second", Instant.parse("2026-01-01T00:00:01Z")),
+            testUser,
+        )
+        chatSessionRepository.addMessage(
+            sessionId,
+            MessageData(latest, MessageRole.ASSISTANT, "third", Instant.parse("2026-01-01T00:00:02Z")),
+            null,
+            testUser,
+        )
+        assertTrue(chatSessionRepository.updateMessageNarration(sessionId, narratedAlready, "spoken first"))
+        val before = chatSessionRepository.getMessages(sessionId).associateBy { it.messageId }
+
+        chatSessionRepository.updateMessageNarration(sessionId, "spoken third")
+
+        val after = chatSessionRepository.getMessages(sessionId).associateBy { it.messageId }
+        assertEquals("spoken third", after[latest]?.narration)
+        assertEquals("third", after[latest]?.content)
+        assertEquals(testUser.id, after[latest]?.recipient?.id)
+        assertEquals(before[narratedAlready], after[narratedAlready])
+        assertEquals(before[fromUser], after[fromUser])
+        // The narration is a property of the message node, so a message loaded before it is stale.
+        assertThrows(StaleObjectException::class.java) {
+            graphObjectManager.save(requireNotNull(before[latest]).message.copy(content = "Written over the narration"))
+        }
+    }
+
+    @Test
+    @Suppress("DEPRECATION")
+    fun `the deprecated narration does nothing when no assistant message is left to narrate`() {
+        val sessionId = UUIDv7.generateString()
+        chatSessionRepository.createSession(sessionId, testUser)
+        val only = UUIDv7.generateString()
+        chatSessionRepository.addMessage(
+            sessionId,
+            MessageData(only, MessageRole.ASSISTANT, "only", Instant.parse("2026-01-01T00:00:00Z")),
+        )
+        assertTrue(chatSessionRepository.updateMessageNarration(sessionId, only, "spoken form"))
+
+        chatSessionRepository.updateMessageNarration(sessionId, "a second narration")
+        chatSessionRepository.updateMessageNarration("nonexistent-session", "a narration for no session")
+
         assertEquals("spoken form", chatSessionRepository.getMessages(sessionId).single().narration)
     }
 

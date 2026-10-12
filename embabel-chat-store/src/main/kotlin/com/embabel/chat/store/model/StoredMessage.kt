@@ -225,13 +225,14 @@ data class AttributedMessage(
  * Write-optimized view for adding a new message to an existing session.
  *
  * Rooted on [SessionRef] with OUTGOING HAS_MESSAGE to an [AttributedMessage].
- * Since there is no prior load, Drivine has no snapshot and treats everything
- * as new — creating the message node, user relationships, and session link
- * without touching any existing node properties.
+ * A save adds the relationships the view holds and removes none, so it creates
+ * the message node, its user relationships, and the session link. The session
+ * and user nodes are matched by ID alone: [SessionRef] and [UserRef] have no
+ * other field, so none of their existing properties is written.
  *
  * This replaces the previous approach of loading the full [StoredSession] graph,
  * appending a message, and re-saving — which could overwrite user properties
- * (e.g., persona) with stale cached values via Drivine's dirty tracking.
+ * (e.g., persona) with stale values.
  */
 @GraphView
 data class NewMessageInSession(

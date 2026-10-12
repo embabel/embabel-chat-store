@@ -67,6 +67,12 @@ private fun registerOrder(order: OrderSpec) {
  *
  * Uses StatelessGraphObjectManager with reified type extensions and generated query DSL
  * for type-safe graph operations.
+ *
+ * [SessionData] and [MessageData] carry a `@NodeStamp`, so a save of a loaded session or message
+ * is refused with `StaleObjectException` when the node's properties changed after the load. Every
+ * Cypher statement here that sets a property of one of those nodes therefore also sets
+ * `Stamps.setClause`: without it a checked save would not notice the write, and would overwrite it.
+ * Cypher added to this class must do the same.
  */
 open class ChatSessionRepositoryImpl(
     private val graphObjectManager: StatelessGraphObjectManager,
@@ -370,11 +376,15 @@ open class ChatSessionRepositoryImpl(
         }
     }
 
+    /**
+     * Updates the session node alone, and not the [StoredSession] view: a title change has no use
+     * for the session's messages, and loading the view would fetch every one of them with its
+     * embedding vector.
+     */
     @Transactional
     override fun updateSessionTitle(sessionId: String, title: String) {
-        graphObjectManager.update<StoredSession>(sessionId) {
-            it.copy(session = it.session.copy(title = title))
-        } ?: throw IllegalArgumentException("Session not found: $sessionId")
+        graphObjectManager.update<SessionData>(sessionId) { it.copy(title = title) }
+            ?: throw IllegalArgumentException("Session not found: $sessionId")
     }
 
     @Transactional
@@ -513,6 +523,9 @@ open class ChatSessionRepositoryImpl(
             logger.debug("No un-narrated assistant message found in session {}", conversationId)
             return
         }
+        // The message node alone, and of it the narration alone: the author, the recipient and the
+        // attachments are not written. The message carries the stamp it was loaded with, so the
+        // save is checked.
         graphObjectManager.save(
             latestAssistant.message.copy(narration = narration),
             only = setOf(MessageData::narration),

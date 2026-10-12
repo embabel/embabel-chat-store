@@ -251,6 +251,58 @@ So the backfill is a correctness step for one ordering, not a prerequisite for r
 `PersistenceManager` bean is present it cannot run, and the auto-configuration logs a warning
 saying so; `CREATED` is unaffected either way.
 
+## Concurrent Writes
+
+`SessionData` and `MessageData` each have a `stamp` field, annotated with Drivine's
+`@NodeStamp`. Loading fills it. A save of a session or message that carries a stamp is applied
+only if the node's properties are as they were when it was loaded, and is otherwise refused
+with `StaleObjectException`. Nothing is written by a refused save.
+
+```kotlin
+val session = repository.findBySessionId(sessionId).get().session
+// ... another writer adds a message, which advances lastActivityAt ...
+graphObjectManager.save(session.copy(title = "New title"))   // StaleObjectException
+```
+
+The repository's own writes need no handling:
+
+| Write | What it does about a concurrent change |
+|---|---|
+| `updateSessionTitle` | Writes only the title. If the session changed after it was loaded, it is loaded again and the title applied to the fresh one. |
+| `addMessage` | Adds the message and advances `lastActivityAt` without loading the session, so there is nothing to be stale. |
+| `updateMessageNarration` | Writes only the narration of the one message. |
+
+Treat the stamp as opaque, and leave it null on a session or message you construct. It is part
+of `equals`, `copy`, and any JSON made from these classes directly.
+
+### Cypher of your own
+
+A save notices only a write that replaced the stamp. Cypher that sets a property of a
+`ChatSession` or `StoredMessage` node must therefore set `Stamps.setClause` in the same
+statement, as the repository's own Cypher does:
+
+```kotlin
+"MATCH (m:StoredMessage {messageId: \$id}) SET m.narration = \$narration, ${Stamps.setClause("m")}"
+```
+
+Without it, a save of an object loaded before the statement ran overwrites what it wrote.
+
+### Upgrading from before stamps
+
+`ChatSessionRepositoryImpl` takes a `StatelessGraphObjectManager`, where it took a
+`GraphObjectManager`:
+
+```kotlin
+@Bean
+fun chatSessionRepository(
+    factory: GraphObjectManagerFactory,
+    persistenceManager: PersistenceManager,
+): ChatSessionRepository = ChatSessionRepositoryImpl(factory.stateless(), persistenceManager)
+```
+
+Stored data needs no migration. A session or message stored before stamps loads with a null
+`stamp`, so its first save is not checked, and that save gives the node a stamp.
+
 ## Auto Title Generation
 
 Provide a `TitleGenerator` to automatically generate session titles:

@@ -200,10 +200,12 @@ interface ChatSessionRepository {
     fun countSessionsForUser(userId: String): Long
 
     /**
-     * Update the title of a session.
+     * Update the title of a session. Only the title is written: a message added to the session,
+     * or activity recorded on it, at the same moment is kept.
      *
      * @param sessionId the session ID
      * @param title the new title
+     * @throws IllegalArgumentException when there is no session with this ID
      */
     fun updateSessionTitle(sessionId: String, title: String)
 

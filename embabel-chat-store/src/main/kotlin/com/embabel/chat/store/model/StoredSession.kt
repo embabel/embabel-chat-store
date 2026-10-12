@@ -67,7 +67,7 @@ data class StoredSession(
 
 /**
  * Lightweight session reference for write operations.
- * Contains only the session ID — used as the root of [NewMessage] to create
+ * Contains only the session ID — used as the root of [NewMessageInSession] to create
  * the HAS_MESSAGE relationship without loading or modifying session properties.
  *
  * @see NewMessageInSession

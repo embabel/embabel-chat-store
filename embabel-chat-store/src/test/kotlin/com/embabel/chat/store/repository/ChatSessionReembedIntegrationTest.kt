@@ -19,6 +19,7 @@ import com.embabel.chat.MessageRole
 import com.embabel.chat.store.TestApplication
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.TestSessionUser
+import org.drivine.StaleObjectException
 import org.drivine.manager.PersistenceManager
 import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.query.QuerySpecification
@@ -72,6 +73,20 @@ class ChatSessionReembedIntegrationTest {
         listOf("the first thing said", "the second thing said").forEach {
             chatSessionRepository.addMessage(sessionId, MessageData(UUID.randomUUID().toString(), MessageRole.USER, it, Instant.now()))
         }
+    }
+
+    @Test
+    fun `a save of a message loaded before a re-embed is refused`() {
+        val loadedBefore = chatSessionRepository.getMessages(sessionId).first().message
+
+        // The vector is rewritten with Cypher, which must replace the stamp.
+        chatSessionRepository.reembedMessages("narrow", spec(NARROW), constantVectors(NARROW))
+
+        assertThrows(StaleObjectException::class.java) {
+            graphObjectManager.save(loadedBefore.copy(content = "Written over the new vector"))
+        }
+        assertEquals(2, countAtModel("narrow"))
+        assertTrue(chatSessionRepository.getMessages(sessionId).none { it.content == "Written over the new vector" })
     }
 
     @Test
