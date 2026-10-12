@@ -16,6 +16,7 @@
 package com.embabel.chat.store.repository
 
 import org.drivine.manager.PersistenceManager
+import org.drivine.model.Stamps
 import org.drivine.query.QuerySpecification
 import org.slf4j.LoggerFactory
 import java.time.Instant
@@ -76,7 +77,8 @@ class SessionActivityMigration(
                 WITH session LIMIT ${'$'}batchSize
                 OPTIONAL MATCH (session)-[:HAS_MESSAGE]->(message:StoredMessage)
                 WITH session, max(message.createdAt) AS latestMessageAt
-                SET session.lastActivityAt = coalesce(latestMessageAt, session.createdAt, ${'$'}floor)
+                SET session.lastActivityAt = coalesce(latestMessageAt, session.createdAt, ${'$'}floor),
+                    ${Stamps.setClause("session")}
                 RETURN count(session) AS updated
                 """.trimIndent()
             )

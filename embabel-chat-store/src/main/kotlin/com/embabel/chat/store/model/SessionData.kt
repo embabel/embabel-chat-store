@@ -18,6 +18,7 @@ package com.embabel.chat.store.model
 import org.drivine.annotation.Default
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
+import org.drivine.annotation.NodeStamp
 import org.drivine.annotation.RangeIndex
 import java.time.Instant
 
@@ -67,5 +68,12 @@ data class SessionData(
     /**
      * Optional metadata for application-specific extensions.
      */
-    val metadata: Map<String, Any>? = null
+    val metadata: Map<String, Any>? = null,
+
+    /**
+     * Drivine's stamp of the session node, filled when the session is loaded. A save of a session
+     * that carries one is refused with `StaleObjectException` when the node's properties changed
+     * after the load. Treat it as opaque, and leave it null for a new session.
+     */
+    @NodeStamp val stamp: String? = null,
 )

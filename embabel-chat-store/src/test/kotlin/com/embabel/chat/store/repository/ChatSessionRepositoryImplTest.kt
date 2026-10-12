@@ -22,6 +22,7 @@ import com.embabel.chat.store.model.AssetData
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.TestSessionUser
 import com.embabel.chat.store.util.UUIDv7
+import org.drivine.StaleObjectException
 import org.drivine.manager.PersistenceManager
 import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.query.QuerySpecification
@@ -523,6 +524,50 @@ class ChatSessionRepositoryImplTest {
     @Test
     fun `test get participants returns empty for nonexistent session`() {
         assertTrue(chatSessionRepository.getParticipants("nonexistent-session").isEmpty())
+    }
+
+    @Test
+    fun `a loaded session and its messages carry a stamp`() {
+        val sessionId = UUID.randomUUID().toString()
+        val message = MessageData(UUIDv7.generateString(), MessageRole.USER, "hello", Instant.now())
+        chatSessionRepository.createSessionWithMessage(sessionId, testUser, "Stamped", message, testUser, null)
+
+        val found = chatSessionRepository.findBySessionId(sessionId).get()
+
+        assertNotNull(found.session.stamp)
+        assertNotNull(found.messages.single().message.stamp)
+    }
+
+    @Test
+    fun `a save of a session loaded before a message was added is refused`() {
+        val sessionId = UUID.randomUUID().toString()
+        chatSessionRepository.createSession(sessionId, testUser, "Original Title")
+        val loadedBefore = chatSessionRepository.findBySessionId(sessionId).get().session
+
+        // Adding a message advances lastActivityAt with Cypher, which must replace the stamp.
+        val message = MessageData(UUIDv7.generateString(), MessageRole.USER, "hello", Instant.now())
+        chatSessionRepository.addMessage(sessionId, message, testUser)
+
+        assertThrows(StaleObjectException::class.java) {
+            graphObjectManager.save(loadedBefore.copy(title = "Written over the new activity"))
+        }
+        assertEquals("Original Title", chatSessionRepository.findBySessionId(sessionId).get().session.title)
+    }
+
+    @Test
+    fun `a save of a message loaded before it was narrated is refused`() {
+        val sessionId = UUID.randomUUID().toString()
+        val message = MessageData(UUIDv7.generateString(), MessageRole.ASSISTANT, "hello", Instant.now())
+        chatSessionRepository.createSessionWithMessage(sessionId, testUser, "Narrated", message, null, null)
+        val loadedBefore = chatSessionRepository.getMessages(sessionId).single().message
+
+        // The narration is written with Cypher, which must replace the stamp.
+        assertTrue(chatSessionRepository.updateMessageNarration(sessionId, message.messageId, "spoken form"))
+
+        assertThrows(StaleObjectException::class.java) {
+            graphObjectManager.save(loadedBefore.copy(content = "Written over the narration"))
+        }
+        assertEquals("spoken form", chatSessionRepository.getMessages(sessionId).single().narration)
     }
 
     @Test

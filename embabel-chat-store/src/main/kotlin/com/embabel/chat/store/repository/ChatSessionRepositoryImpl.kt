@@ -42,6 +42,7 @@ import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.manager.delete
 import org.drivine.manager.load
 import org.drivine.manager.update
+import org.drivine.model.Stamps
 import org.drivine.schema.EnsureResult
 import org.drivine.schema.VectorIndexSpec
 import org.drivine.query.QuerySpecification
@@ -477,7 +478,7 @@ open class ChatSessionRepositoryImpl(
                     """
                     MATCH (:ChatSession {sessionId: ${'$'}sessionId})
                           -[:HAS_MESSAGE]->(message:StoredMessage {messageId: ${'$'}messageId})
-                    SET message.narration = ${'$'}narration
+                    SET message.narration = ${'$'}narration, ${Stamps.setClause("message")}
                     RETURN count(message) AS updated
                     """.trimIndent()
                 )
@@ -538,7 +539,8 @@ open class ChatSessionRepositoryImpl(
                 MATCH (session:ChatSession {sessionId: ${'$'}sessionId})
                 SET session.lastActivityAt = CASE
                     WHEN session.lastActivityAt IS NULL OR session.lastActivityAt < ${'$'}activityAt
-                    THEN ${'$'}activityAt ELSE session.lastActivityAt END
+                    THEN ${'$'}activityAt ELSE session.lastActivityAt END,
+                    ${Stamps.setClause("session")}
                 RETURN count(session) AS found
                 """.trimIndent()
             )

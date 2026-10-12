@@ -17,6 +17,7 @@ package com.embabel.chat.store.repository
 
 import com.embabel.chat.store.repository.ChatSessionRepositoryImpl.MessageText
 import org.drivine.manager.PersistenceManager
+import org.drivine.model.Stamps
 import org.drivine.query.QuerySpecification
 import org.slf4j.LoggerFactory
 
@@ -120,8 +121,10 @@ internal class MessageReembedRun(
             batch.mapIndexed { i, row ->
                 QuerySpecification
                     .withStatement(
-                        "MATCH (m:StoredMessage {messageId: ${'$'}id}) " +
-                            "SET m.embedding = ${'$'}embedding, m.embeddingModel = ${'$'}model",
+                        """
+                        MATCH (m:StoredMessage {messageId: ${'$'}id})
+                        SET m.embedding = ${'$'}embedding, m.embeddingModel = ${'$'}model, ${Stamps.setClause("m")}
+                        """.trimIndent(),
                     )
                     .bind(mapOf("id" to row.messageId, "embedding" to vectors[i], "model" to modelName))
             },

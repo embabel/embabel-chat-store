@@ -26,6 +26,7 @@ import org.drivine.annotation.GraphRelationship
 import org.drivine.annotation.GraphView
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
+import org.drivine.annotation.NodeStamp
 import org.drivine.annotation.Root
 import com.embabel.chat.store.util.UUIDv7
 import java.time.Instant
@@ -90,6 +91,13 @@ data class MessageData(
      * model is later changed and old vectors need to be re-embedded.
      */
     val embeddingModel: String? = null,
+
+    /**
+     * Drivine's stamp of the message node, filled when the message is loaded. A save of a message
+     * that carries one is refused with `StaleObjectException` when the node's properties changed
+     * after the load. Treat it as opaque, and leave it null for a new message.
+     */
+    @NodeStamp val stamp: String? = null,
 ) {
     companion object {
         /**
