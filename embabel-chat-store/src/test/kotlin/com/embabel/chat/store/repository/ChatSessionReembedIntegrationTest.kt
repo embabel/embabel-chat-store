@@ -19,8 +19,8 @@ import com.embabel.chat.MessageRole
 import com.embabel.chat.store.TestApplication
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.TestSessionUser
-import org.drivine.manager.GraphObjectManager
 import org.drivine.manager.PersistenceManager
+import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.query.QuerySpecification
 import org.drivine.schema.SimilarityFunction
 import org.drivine.schema.VectorIndexSpec
@@ -55,7 +55,7 @@ class ChatSessionReembedIntegrationTest {
     private lateinit var chatSessionRepository: ChatSessionRepository
 
     @Autowired
-    private lateinit var graphObjectManager: GraphObjectManager
+    private lateinit var graphObjectManager: StatelessGraphObjectManager
 
     @Autowired
     private lateinit var persistenceManager: PersistenceManager

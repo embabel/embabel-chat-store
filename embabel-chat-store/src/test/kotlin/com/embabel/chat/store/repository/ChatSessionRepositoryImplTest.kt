@@ -22,8 +22,8 @@ import com.embabel.chat.store.model.AssetData
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.TestSessionUser
 import com.embabel.chat.store.util.UUIDv7
-import org.drivine.manager.GraphObjectManager
 import org.drivine.manager.PersistenceManager
+import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
@@ -49,7 +49,7 @@ class ChatSessionRepositoryImplTest {
     private lateinit var chatSessionRepository: ChatSessionRepository
 
     @Autowired
-    private lateinit var graphObjectManager: GraphObjectManager
+    private lateinit var graphObjectManager: StatelessGraphObjectManager
 
     @Autowired
     private lateinit var persistenceManager: PersistenceManager

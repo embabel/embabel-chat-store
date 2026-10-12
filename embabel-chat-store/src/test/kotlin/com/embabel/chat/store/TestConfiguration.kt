@@ -21,10 +21,10 @@ import com.embabel.chat.store.repository.ChatSessionRepository
 import com.embabel.chat.store.repository.ChatSessionRepositoryImpl
 import org.drivine.autoconfigure.EnableDrivine
 import org.drivine.autoconfigure.EnableDrivineTestConfig
-import org.drivine.manager.GraphObjectManager
 import org.drivine.manager.GraphObjectManagerFactory
 import org.drivine.manager.PersistenceManager
 import org.drivine.manager.PersistenceManagerFactory
+import org.drivine.manager.StatelessGraphObjectManager
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.ComponentScan
 import org.springframework.context.annotation.Configuration
@@ -61,13 +61,13 @@ class TestApplication {
     }
 
     @Bean
-    fun graphObjectManager(factory: GraphObjectManagerFactory): GraphObjectManager {
-        return factory.get("neo")
+    fun graphObjectManager(factory: GraphObjectManagerFactory): StatelessGraphObjectManager {
+        return factory.stateless("neo")
     }
 
     @Bean
     fun chatSessionRepository(
-        graphObjectManager: GraphObjectManager,
+        graphObjectManager: StatelessGraphObjectManager,
         persistenceManager: PersistenceManager,
     ): ChatSessionRepository {
         return ChatSessionRepositoryImpl(graphObjectManager, persistenceManager)

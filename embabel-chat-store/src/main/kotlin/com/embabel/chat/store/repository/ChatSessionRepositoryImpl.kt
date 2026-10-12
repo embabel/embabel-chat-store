@@ -37,10 +37,11 @@ import com.embabel.chat.store.model.deleteAll
 import com.embabel.chat.store.model.loadAll
 import com.embabel.chat.store.model.owner
 import org.drivine.manager.CascadeType
-import org.drivine.manager.GraphObjectManager
 import org.drivine.manager.PersistenceManager
+import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.manager.delete
 import org.drivine.manager.load
+import org.drivine.manager.update
 import org.drivine.schema.EnsureResult
 import org.drivine.schema.VectorIndexSpec
 import org.drivine.query.QuerySpecification
@@ -63,11 +64,11 @@ private fun registerOrder(order: OrderSpec) {
 /**
  * Drivine-based implementation of ChatSessionRepository.
  *
- * Uses GraphObjectManager with reified type extensions and generated query DSL
+ * Uses StatelessGraphObjectManager with reified type extensions and generated query DSL
  * for type-safe graph operations.
  */
 open class ChatSessionRepositoryImpl(
-    private val graphObjectManager: GraphObjectManager,
+    private val graphObjectManager: StatelessGraphObjectManager,
     private val persistenceManager: PersistenceManager,
     private val eventPublisher: ApplicationEventPublisher? = null,
     private val clock: Clock = Clock.systemUTC(),
@@ -370,13 +371,9 @@ open class ChatSessionRepositoryImpl(
 
     @Transactional
     override fun updateSessionTitle(sessionId: String, title: String) {
-        val session = findBySessionId(sessionId).orElseThrow {
-            IllegalArgumentException("Session not found: $sessionId")
-        }
-        val updated = session.copy(
-            session = session.session.copy(title = title)
-        )
-        graphObjectManager.save(updated)
+        graphObjectManager.update<StoredSession>(sessionId) {
+            it.copy(session = it.session.copy(title = title))
+        } ?: throw IllegalArgumentException("Session not found: $sessionId")
     }
 
     @Transactional
@@ -452,7 +449,7 @@ open class ChatSessionRepositoryImpl(
                 assets = assets,
             )
         )
-        graphObjectManager.save(newMessage, CascadeType.PRESERVE)
+        graphObjectManager.save(newMessage)
 
         return findBySessionId(sessionId).orElseThrow {
             IllegalStateException("Session not found after adding message: $sessionId")
@@ -515,10 +512,10 @@ open class ChatSessionRepositoryImpl(
             logger.debug("No un-narrated assistant message found in session {}", conversationId)
             return
         }
-        val updated = latestAssistant.copy(
-            message = latestAssistant.message.copy(narration = narration)
+        graphObjectManager.save(
+            latestAssistant.message.copy(narration = narration),
+            only = setOf(MessageData::narration),
         )
-        graphObjectManager.save(updated)
         logger.debug("Updated narration for message {} in session {}", latestAssistant.messageId, conversationId)
     }
 
