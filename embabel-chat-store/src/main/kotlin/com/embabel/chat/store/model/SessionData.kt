@@ -58,9 +58,8 @@ data class SessionData(
      * rather than failing to load, so old data stays readable and orders sensibly under
      * [com.embabel.chat.store.repository.SessionOrder.CREATED] with no migration at all.
      * [com.embabel.chat.store.repository.SessionOrder.LAST_ACTIVITY] additionally needs the
-     * value materialised in the graph — a null never satisfies a keyset comparison — so
-     * [com.embabel.chat.store.repository.SessionActivityMigration] still backfills it, but as
-     * a correctness step for that one ordering rather than a prerequisite for reading at all.
+     * value materialised in the graph — a null never satisfies a keyset comparison. Adding a
+     * message writes it.
      */
     @Default
     val lastActivityAt: Instant = createdAt,

@@ -187,7 +187,7 @@ class ChatSessionRepositoryImplTest {
         )
 
         // @Default on SessionData.lastActivityAt: a node predating the property hydrates as
-        // createdAt rather than failing, so old data needs no migration merely to be read.
+        // createdAt rather than failing, so old data still reads.
         val page = chatSessionRepository.listSessionsForUser(testUser.id, SessionPageRequest(pageSize = 10))
 
         val loaded = page.items.single { it.session.sessionId == sessionId }
@@ -195,19 +195,24 @@ class ChatSessionRepositoryImplTest {
     }
 
     @Test
-    fun `the migration restores readability of a session with no activity timestamp`() {
+    fun `a session with no activity timestamp is given one by its next message`() {
         val sessionId = UUIDv7.generateString()
         chatSessionRepository.createSession(sessionId, testUser)
         persistenceManager.execute(
             QuerySpecification.withStatement(
-                "MATCH (s:ChatSession {sessionId: \$id}) SET s.lastActivityAt = null"
+                "MATCH (s:ChatSession {sessionId: \$id}) REMOVE s.lastActivityAt"
             ).bind(mapOf("id" to sessionId))
         )
 
-        SessionActivityMigration(persistenceManager).migrate()
+        chatSessionRepository.addMessage(sessionId, MessageData(UUIDv7.generateString(), MessageRole.USER, "hi", Instant.now()))
 
-        val page = chatSessionRepository.listSessionsForUser(testUser.id, SessionPageRequest(pageSize = 10))
-        assertTrue(page.items.any { it.session.sessionId == sessionId })
+        val stored = persistenceManager.getOne(
+            QuerySpecification
+                .withStatement("MATCH (s:ChatSession {sessionId: \$id}) RETURN s.lastActivityAt IS NOT NULL")
+                .bind(mapOf("id" to sessionId))
+                .transform(Boolean::class.java)
+        )
+        assertTrue(stored, "a keyset page by activity compares the stored value, not the default")
     }
 
     @Test
@@ -222,32 +227,6 @@ class ChatSessionRepositoryImplTest {
                 SessionPageRequest(pageSize = 1, cursor = createdPage.nextCursor, order = SessionOrder.LAST_ACTIVITY),
             )
         }
-    }
-
-    @Test
-    fun `activity migration backfills latest message and is idempotent`() {
-        val sessionId = UUID.randomUUID().toString()
-        chatSessionRepository.createSession(sessionId, testUser)
-        val latest = Instant.parse("2026-02-03T04:05:06Z")
-        persistenceManager.execute(
-            QuerySpecification.withStatement(
-                "MATCH (s:ChatSession {sessionId: \$id}) SET s.lastActivityAt = null"
-            ).bind(mapOf("id" to sessionId))
-        )
-        chatSessionRepository.addMessage(
-            sessionId,
-            MessageData(UUID.randomUUID().toString(), MessageRole.USER, "hi", latest),
-        )
-        persistenceManager.execute(
-            QuerySpecification.withStatement(
-                "MATCH (s:ChatSession {sessionId: \$id}) SET s.lastActivityAt = null"
-            ).bind(mapOf("id" to sessionId))
-        )
-
-        SessionActivityMigration(persistenceManager).migrate()
-        SessionActivityMigration(persistenceManager).migrate()
-
-        assertEquals(latest, chatSessionRepository.findBySessionId(sessionId).get().session.lastActivityAt)
     }
 
     @Test
@@ -569,26 +548,6 @@ class ChatSessionRepositoryImplTest {
             graphObjectManager.save(loadedBefore.copy(content = "Written over the narration"))
         }
         assertEquals("spoken form", chatSessionRepository.getMessages(sessionId).single().narration)
-    }
-
-    @Test
-    fun `a save of a session loaded before the activity backfill is refused`() {
-        val sessionId = UUID.randomUUID().toString()
-        chatSessionRepository.createSession(sessionId, testUser, "Original Title")
-        // Cypher that does not replace the stamp, so that the backfill is what does.
-        persistenceManager.execute(
-            QuerySpecification.withStatement(
-                "MATCH (s:ChatSession {sessionId: \$id}) SET s.lastActivityAt = null"
-            ).bind(mapOf("id" to sessionId))
-        )
-        val loadedBefore = chatSessionRepository.findBySessionId(sessionId).get().session
-
-        SessionActivityMigration(persistenceManager).migrate()
-
-        assertThrows(StaleObjectException::class.java) {
-            graphObjectManager.save(loadedBefore.copy(title = "Written over the backfill"))
-        }
-        assertEquals("Original Title", chatSessionRepository.findBySessionId(sessionId).get().session.title)
     }
 
     @Test

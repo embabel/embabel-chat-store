@@ -79,7 +79,7 @@ class ChatSessionReembedIntegrationTest {
     fun `a save of a message loaded before a re-embed is refused`() {
         val loadedBefore = chatSessionRepository.getMessages(sessionId).first().message
 
-        // The vector is rewritten with Cypher, which must replace the stamp.
+        // The vector is written by a save of the message, which replaces the stamp.
         chatSessionRepository.reembedMessages("narrow", spec(NARROW), constantVectors(NARROW))
 
         assertThrows(StaleObjectException::class.java) {

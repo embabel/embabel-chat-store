@@ -28,10 +28,7 @@ import com.embabel.chat.store.embedding.MessageEmbedder
 import com.embabel.chat.store.embedding.RoleFilteringMessageEmbedder
 import com.embabel.chat.store.event.SessionEventAwaiter
 import com.embabel.chat.store.repository.ChatSessionRepository
-import com.embabel.chat.store.repository.SessionActivityMigration
-import com.embabel.chat.store.repository.SessionOrder
 import com.embabel.chat.support.InMemoryConversationFactory
-import org.drivine.manager.PersistenceManager
 import org.drivine.schema.RangeIndexSpec
 import org.drivine.schema.SchemaCatalog
 import org.drivine.schema.SimilarityFunction
@@ -40,7 +37,6 @@ import org.drivine.schema.VectorIndexSpec
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.boot.ApplicationRunner
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass
@@ -156,31 +152,6 @@ open class ChatStoreAutoConfiguration {
         UniquenessConstraintSpec(label = "StoredAsset", property = "storedAssetId"),
         RangeIndexSpec(label = "ChatSession", property = "lastActivityAt"),
     ).named(CONSTRAINT_SCHEMA_OWNER)
-
-    /**
-     * Backfills activity for installations that predate most-recently-active ordering.
-     *
-     * Resolved through an [ObjectProvider] rather than `@ConditionalOnBean`: the condition is
-     * evaluated at auto-configuration parse time, so an application that registers its
-     * [PersistenceManager] from another auto-configuration or a `BeanFactoryPostProcessor`
-     * would silently get no runner — and un-backfilled sessions then vanish from every page
-     * after the first under [SessionOrder.LAST_ACTIVITY]. Absence is logged loudly instead.
-     */
-    @Bean
-    open fun chatStoreSessionActivityMigration(
-        persistenceManagers: ObjectProvider<PersistenceManager>,
-    ): ApplicationRunner = ApplicationRunner {
-        val persistenceManager = persistenceManagers.getIfAvailable()
-        if (persistenceManager == null) {
-            logger.warn(
-                "No PersistenceManager bean: skipping the session activity backfill. Sessions " +
-                    "created before lastActivityAt existed will be missing from paged listings " +
-                    "ordered by ${SessionOrder.LAST_ACTIVITY}."
-            )
-        } else {
-            SessionActivityMigration(persistenceManager).migrate()
-        }
-    }
 
     /**
      * Declares the chat-message vector index, sized to the configured embedding model's

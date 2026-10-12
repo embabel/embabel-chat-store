@@ -241,3 +241,18 @@ data class NewMessageInSession(
     @GraphRelationship(type = "HAS_MESSAGE", direction = Direction.OUTGOING)
     val message: AttributedMessage
 )
+
+/**
+ * A message with the session that holds it, for a write that must not reach a message of another
+ * session.
+ *
+ * Rooted on the message, so it is loaded by message ID. The session is required: a message that no
+ * session holds does not load.
+ */
+@GraphView
+data class MessageInSession(
+    @Root val message: MessageData,
+
+    @GraphRelationship(type = "HAS_MESSAGE", direction = Direction.INCOMING)
+    val session: SessionRef,
+)

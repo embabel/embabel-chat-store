@@ -15,18 +15,29 @@
  */
 package com.embabel.chat.store.repository
 
-import com.embabel.chat.store.repository.ChatSessionRepositoryImpl.MessageText
-import org.drivine.manager.PersistenceManager
-import org.drivine.model.Stamps
-import org.drivine.query.QuerySpecification
+import com.embabel.chat.store.model.MessageData
+import com.embabel.chat.store.model.MessageDataQueryDsl
+import com.embabel.chat.store.model.loadAll
+import org.drivine.StaleObjectException
+import org.drivine.manager.StatelessGraphObjectManager
+import org.drivine.manager.update
+import org.drivine.query.dsl.GraphQuerySpec
+import org.drivine.query.dsl.anyOf
+import org.drivine.query.dsl.not
+import org.drivine.query.dsl.notIn
+import org.drivine.query.dsl.query
 import org.slf4j.LoggerFactory
 
 /**
  * One pass rewriting every message vector not already made by [modelName].
  *
  * Paged rather than loaded whole: a busy world's message history is the largest thing in the store,
- * and one `embed` call per page bounds both the request size and the memory held. Each page's
- * writes commit as they land, so an interrupted run resumes where it stopped.
+ * and one `embed` call per page bounds both the request size and the memory held. Each message's
+ * vector commits as it is written, so an interrupted run resumes where it stopped.
+ *
+ * The scan and the writes go through the object manager and not a statement written by hand, so
+ * the run is the same on a store that does not speak Cypher. A page is therefore loaded as whole
+ * messages, the vectors to be replaced among them.
  *
  * A failed `embed` call — including one that answers with the wrong number of vectors — is split
  * in half and retried, down to single messages, so a message the service refuses costs only
@@ -35,7 +46,7 @@ import org.slf4j.LoggerFactory
  * taken to be down and the run stops.
  */
 internal class MessageReembedRun(
-    private val persistenceManager: PersistenceManager,
+    private val graphObjectManager: StatelessGraphObjectManager,
     private val modelName: String,
     private val embed: (List<String>) -> List<List<Double>>,
     private val pageSize: Int,
@@ -76,7 +87,7 @@ internal class MessageReembedRun(
         )
     }
 
-    private fun embedIsolating(batch: List<MessageText>) {
+    private fun embedIsolating(batch: List<MessageData>) {
         if (abandoned) return
         val vectors = tryEmbed(batch)
         when {
@@ -95,7 +106,7 @@ internal class MessageReembedRun(
     }
 
     /** The batch's vectors, or null after recording a failed call. */
-    private fun tryEmbed(batch: List<MessageText>): List<List<Double>>? = try {
+    private fun tryEmbed(batch: List<MessageData>): List<List<Double>>? = try {
         embed(batch.map { it.content }).also { vectors ->
             check(vectors.size == batch.size) {
                 "Embedding service returned ${vectors.size} vectors for ${batch.size} texts"
@@ -116,53 +127,62 @@ internal class MessageReembedRun(
         null
     }
 
-    private fun write(batch: List<MessageText>, vectors: List<List<Double>>) {
-        persistenceManager.executeBatch(
-            batch.mapIndexed { i, row ->
-                QuerySpecification
-                    .withStatement(
-                        """
-                        MATCH (m:StoredMessage {messageId: ${'$'}id})
-                        SET m.embedding = ${'$'}embedding, m.embeddingModel = ${'$'}model, ${Stamps.setClause("m")}
-                        """.trimIndent(),
-                    )
-                    .bind(mapOf("id" to row.messageId, "embedding" to vectors[i], "model" to modelName))
-            },
-        )
-        rewritten += batch.size
+    private fun write(batch: List<MessageData>, vectors: List<List<Double>>) {
+        batch.forEachIndexed { i, message ->
+            val vector = vectors[i]
+            if (write(message, FloatArray(vector.size) { vector[it].toFloat() })) rewritten++
+        }
     }
 
-    private fun loadPendingPage(): List<MessageText> = persistenceManager.query(
-        QuerySpecification
-            .withStatement(
-                """
-                MATCH (m:StoredMessage)
-                WHERE $PENDING
-                RETURN { messageId: m.messageId, content: m.content }
-                LIMIT ${'$'}limit
-                """.trimIndent(),
-            )
-            .bind(mapOf("model" to modelName, "failed" to failedIds.toList(), "limit" to pageSize))
-            .transform(MessageText::class.java),
-    )
+    /**
+     * Write one message's vector, and of the message nothing else. The save is checked against the
+     * stamp the page loaded: a message changed since, by a narration for one, is loaded again and
+     * given the vector then.
+     *
+     * @return false when the message was deleted after the page was loaded
+     */
+    private fun write(message: MessageData, vector: FloatArray): Boolean = try {
+        graphObjectManager.save(
+            message.copy(embedding = vector, embeddingModel = modelName),
+            only = setOf(MessageData::embedding, MessageData::embeddingModel),
+        )
+        true
+    } catch (stale: StaleObjectException) {
+        !stale.deleted && graphObjectManager.update<MessageData>(message.messageId) {
+            it.copy(embedding = vector, embeddingModel = modelName)
+        } != null
+    }
 
-    private fun countPending(): Int = persistenceManager.getOne(
-        QuerySpecification
-            .withStatement("MATCH (m:StoredMessage) WHERE $PENDING RETURN count(m)")
-            .bind(mapOf("model" to modelName, "failed" to failedIds.toList()))
-            .transform(Long::class.java),
-    ).toInt()
+    private fun loadPendingPage(): List<MessageData> = graphObjectManager.loadAll<MessageData> {
+        pending()
+        limit(pageSize)
+    }
+
+    private fun countPending(): Int =
+        graphObjectManager.count(MessageData::class.java, MessageDataQueryDsl.INSTANCE) { pending() }.toInt()
+
+    /**
+     * Still to rewrite: has content, not made by the current model — a null `embeddingModel` (a
+     * message whose embed failed when it was saved) counts — and not already refused in this run.
+     *
+     * Empty content is ruled out as `not { eq "" }` and not as `neq ""`: Oracle compares a text
+     * over 4,000 characters as absent, which `neq` would take for a message with no content.
+     */
+    private fun GraphQuerySpec<MessageDataQueryDsl>.pending() {
+        val failed = failedIds.toList()
+        where {
+            query.content.isNotNull()
+            not { query.content eq "" }
+            anyOf {
+                query.embeddingModel.isNull()
+                query.embeddingModel neq modelName
+            }
+            if (failed.isNotEmpty()) query.messageId notIn failed
+        }
+    }
 
     private companion object {
         const val ABANDON_SLACK = 3
-
-        /**
-         * Still to rewrite: has content, not made by the current model — a null `embeddingModel`
-         * (a message whose embed failed when it was saved) counts — and not already refused in
-         * this run.
-         */
-        const val PENDING = "m.content IS NOT NULL AND m.content <> '' " +
-            "AND coalesce(m.embeddingModel, '') <> \$model AND NOT m.messageId IN \$failed"
 
         fun ceilLog2(n: Int): Int = if (n <= 1) 0 else Int.SIZE_BITS - Integer.numberOfLeadingZeros(n - 1)
     }
