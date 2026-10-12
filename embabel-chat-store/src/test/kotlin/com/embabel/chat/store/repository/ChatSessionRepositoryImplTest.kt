@@ -632,15 +632,6 @@ class ChatSessionRepositoryImplTest {
         assertNotNull(narrated.message.stamp)
     }
 
-    /** Leaves the node as one stored before stamps were kept: with no stamp property. */
-    private fun removeStamp(label: String, idProperty: String, id: String) {
-        persistenceManager.execute(
-            QuerySpecification
-                .withStatement("MATCH (n:$label {$idProperty: \$id}) REMOVE n.${Stamps.QUOTED}")
-                .bind(mapOf("id" to id))
-        )
-    }
-
     @Test
     fun `a title update writes the title alone and replaces the stamp`() {
         val sessionId = UUID.randomUUID().toString()
@@ -1220,5 +1211,14 @@ class ChatSessionRepositoryImplTest {
         chatSessionRepository.deleteSession(sessionId)
 
         assertEquals(0, countNodes("StoredAsset", "storedAssetId", asset.storedAssetId))
+    }
+
+    /** Leaves the node as one stored before stamps were kept: with no stamp property. */
+    private fun removeStamp(label: String, idProperty: String, id: String) {
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement("MATCH (n:$label {$idProperty: \$id}) REMOVE n.${Stamps.QUOTED}")
+                .bind(mapOf("id" to id))
+        )
     }
 }
