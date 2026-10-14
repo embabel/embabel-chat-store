@@ -17,6 +17,7 @@ package com.embabel.chat.store.repository
 
 import com.embabel.chat.store.model.AttachmentData
 import com.embabel.chat.store.model.AssetData
+import com.embabel.chat.store.model.ContentPartData
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.SessionSummary
 import com.embabel.chat.store.model.SimpleStoredMessage
@@ -24,6 +25,7 @@ import com.embabel.chat.store.model.StoredSession
 import com.embabel.chat.store.model.StoredUser
 import java.util.Optional
 import org.drivine.schema.VectorIndexSpec
+import org.slf4j.LoggerFactory
 
 /**
  * Repository for chat session persistence operations.
@@ -263,6 +265,36 @@ interface ChatSessionRepository {
             recipient = recipient,
             attachments = attachments,
         )
+    }
+
+    /**
+     * Add a message with ordered multimodal content parts and optional durable assets.
+     *
+     * The default keeps third-party repository implementations source-compatible by
+     * discarding unsupported content parts and preserving the message and durable assets.
+     */
+    fun addMessageWithContentParts(
+        sessionId: String,
+        messageData: MessageData,
+        author: StoredUser? = null,
+        recipient: StoredUser? = null,
+        attachments: List<AttachmentData> = emptyList(),
+        assets: List<AssetData> = emptyList(),
+        contentParts: List<ContentPartData>,
+    ): StoredSession {
+        if (contentParts.isNotEmpty()) {
+            logger.warn(
+                "Repository {} does not support multimodal content parts; storing message {} without {} content part(s)",
+                javaClass.name,
+                messageData.messageId,
+                contentParts.size,
+            )
+        }
+        return addMessageWithAssets(sessionId, messageData, author, recipient, attachments, assets)
+    }
+
+    companion object {
+        private val logger = LoggerFactory.getLogger(ChatSessionRepository::class.java)
     }
 
     /**
