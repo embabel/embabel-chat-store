@@ -173,13 +173,18 @@ class StoredConversation(
 
     /**
      * [messages] with the identity each is stored under and the message it answers, for readers
-     * that pair replies with questions. Same order and pending-buffer merge as [messages].
+     * that pair replies with questions. [messages] is derived from this, so the order and the
+     * pending-buffer merge are the same.
+     *
+     * Pending is snapshotted before the DB read: a message persisted during the read leaves the
+     * pending buffer, so reading pending afterwards would miss it in both places.
      */
     val entries: List<ConversationEntry>
         get() {
+            val pendingSnapshot = pendingMessages.toList()
             val dbMessages = repository.getMessages(id)
             val dbMessageIds = dbMessages.mapTo(HashSet()) { it.messageId }
-            val pending = pendingMessages.filter { it.messageData.messageId !in dbMessageIds }
+            val pending = pendingSnapshot.filter { it.messageData.messageId !in dbMessageIds }
             return dbMessages.map { ConversationEntry(it.messageId, it.toMessage(), it.inReplyTo) } +
                 pending.map { ConversationEntry(it.messageData.messageId, it.message, it.messageData.inReplyTo) }
         }

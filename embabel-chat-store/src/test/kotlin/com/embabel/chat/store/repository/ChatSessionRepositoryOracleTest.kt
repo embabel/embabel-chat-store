@@ -135,6 +135,18 @@ class ChatSessionRepositoryOracleTest {
     }
 
     @Test
+    fun `a reply keeps the message it answers across a reload`() {
+        val sessionId = UUIDv7.generateString()
+        chatSessionRepository.createSession(sessionId, user, "Replies")
+        val question = message("question")
+        chatSessionRepository.addMessage(sessionId, question)
+        chatSessionRepository.addMessage(sessionId, message("answer", MessageRole.ASSISTANT).copy(inReplyTo = question.messageId))
+
+        val messages = chatSessionRepository.getMessages(sessionId)
+        assertEquals(listOf(null, question.messageId), messages.map { it.inReplyTo })
+    }
+
+    @Test
     fun `sessions are listed, counted and summarised for their owner alone`() {
         val stranger = TestSessionUser(UUID.randomUUID().toString(), "Stranger")
         graphObjectManager.save(stranger)

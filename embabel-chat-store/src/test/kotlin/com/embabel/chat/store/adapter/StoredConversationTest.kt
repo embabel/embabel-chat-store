@@ -46,6 +46,7 @@ import org.mockito.ArgumentCaptor
 import org.mockito.kotlin.any
 import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.atLeastOnce
+import org.mockito.kotlin.doAnswer
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
@@ -54,6 +55,7 @@ import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 import org.springframework.context.ApplicationEventPublisher
 import java.time.Instant
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -113,10 +115,12 @@ class StoredConversationTest {
     @Test
     fun `a reply records the message it answers, while pending and once persisted`() {
         val release = CountDownLatch(1)
-        val persisted = java.util.concurrent.CopyOnWriteArrayList<SimpleStoredMessage>()
+        val bothPersisted = CountDownLatch(2)
+        val persisted = CopyOnWriteArrayList<SimpleStoredMessage>()
         whenever(repository.addMessage(eq(sessionId), any(), any(), any(), any())).thenAnswer { call ->
             release.await(5, TimeUnit.SECONDS)
             persisted += SimpleStoredMessage(call.getArgument<MessageData>(1))
+            bothPersisted.countDown()
             StoredSession(
                 session = SessionData(sessionId = sessionId, title = "Test", createdAt = Instant.now()),
                 owner = user,
@@ -129,14 +133,12 @@ class StoredConversationTest {
         val question = conversation.addMessageWithId(UserMessage(content = "Q"))
         val reply = conversation.addMessageWithId(AssistantMessage(content = "A"), inReplyTo = question)
 
-        val pending = conversation.entries.associate { it.messageId to it.inReplyTo }
-        assertEquals(mapOf(question to null, reply to question), pending)
-        assertEquals(listOf("Q", "A"), conversation.entries.map { it.message.content })
+        val pending = conversation.entries
+        assertEquals(mapOf(question to null, reply to question), pending.associate { it.messageId to it.inReplyTo })
+        assertEquals(listOf("Q", "A"), pending.map { it.message.content })
 
         release.countDown()
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
-        while (persisted.size < 2 && System.nanoTime() < deadline) Thread.sleep(10)
-        assertEquals(2, persisted.size)
+        assertTrue(bothPersisted.await(5, TimeUnit.SECONDS))
         assertEquals(mapOf(question to null, reply to question), conversation.entries.associate { it.messageId to it.inReplyTo })
     }
 
@@ -259,6 +261,36 @@ class StoredConversationTest {
         assertEquals("Third", messages[2].content)
 
         latch.countDown()
+    }
+
+    @Test
+    fun `message persisted while messages is reading the DB is still returned`() {
+        // Persistence starts only once the read is inside the DB call, and the DB call returns
+        // only once persistence has removed the message from the pending buffer. The DB result
+        // therefore predates the write, and the pending buffer is empty after it.
+        val dbReadStarted = CountDownLatch(1)
+        val persisted = CountDownLatch(1)
+        whenever(repository.addMessage(eq(sessionId), any(), any(), any(), any())).thenAnswer {
+            dbReadStarted.await(5, TimeUnit.SECONDS)
+            StoredSession(
+                session = SessionData(sessionId = sessionId, title = "Test", createdAt = Instant.now()),
+                owner = user,
+                messages = listOf(SimpleStoredMessage(it.getArgument(1))),
+            )
+        }
+        doAnswer {
+            if (it.getArgument<Any>(0) is MessagePersistedEvent) persisted.countDown()
+        }.whenever(eventPublisher).publishEvent(any<Any>())
+        whenever(repository.getMessages(sessionId)).thenAnswer {
+            dbReadStarted.countDown()
+            assertTrue(persisted.await(5, TimeUnit.SECONDS))
+            emptyList<SimpleStoredMessage>()
+        }
+        val conversation = createConversation()
+
+        conversation.addMessage(UserMessage(content = "What was the last email we sent them?"))
+
+        assertEquals(listOf("What was the last email we sent them?"), conversation.messages.map { it.content })
     }
 
     @Test
