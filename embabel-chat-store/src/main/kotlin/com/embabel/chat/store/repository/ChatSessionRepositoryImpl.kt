@@ -21,6 +21,7 @@ import com.embabel.chat.store.model.AssetData
 import com.embabel.chat.store.model.AttributedMessage
 import com.embabel.chat.store.model.DeletableSession
 import com.embabel.chat.store.model.MessageData
+import com.embabel.chat.store.model.MessageInSession
 import com.embabel.chat.store.model.NewMessageInSession
 import com.embabel.chat.store.model.SessionData
 import com.embabel.chat.store.model.SessionParticipants
@@ -35,17 +36,21 @@ import com.embabel.chat.store.model.StoredUser
 import com.embabel.chat.store.model.UserRef
 import com.embabel.chat.store.model.deleteAll
 import com.embabel.chat.store.model.loadAll
+import com.embabel.chat.store.model.message
 import com.embabel.chat.store.model.owner
+import com.embabel.chat.store.model.patch
+import com.embabel.chat.store.model.session
 import org.drivine.manager.CascadeType
-import org.drivine.manager.GraphObjectManager
 import org.drivine.manager.PersistenceManager
+import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.manager.delete
 import org.drivine.manager.load
+import org.drivine.manager.update
 import org.drivine.schema.EnsureResult
 import org.drivine.schema.VectorIndexSpec
-import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.OrderBuilder
 import org.drivine.query.dsl.OrderSpec
+import org.drivine.query.dsl.anyOf
 import org.drivine.query.dsl.query
 import org.slf4j.LoggerFactory
 import org.springframework.context.ApplicationEventPublisher
@@ -63,11 +68,19 @@ private fun registerOrder(order: OrderSpec) {
 /**
  * Drivine-based implementation of ChatSessionRepository.
  *
- * Uses GraphObjectManager with reified type extensions and generated query DSL
+ * Uses StatelessGraphObjectManager with reified type extensions and generated query DSL
  * for type-safe graph operations.
+ *
+ * [SessionData] and [MessageData] carry a `@NodeStamp`, so a save of a loaded session or message
+ * is refused with `StaleObjectException` when the node's properties changed after the load.
+ *
+ * Every read and write of the graph here goes through the object manager, so that it runs on a
+ * store that does not speak Cypher, such as Oracle, as it does on one that does. A statement
+ * written by hand would be Cypher on one and SQL on the other, and would have to mark the stamp
+ * of each node it changes itself. [persistenceManager] is here for the vector index alone.
  */
 open class ChatSessionRepositoryImpl(
-    private val graphObjectManager: GraphObjectManager,
+    private val graphObjectManager: StatelessGraphObjectManager,
     private val persistenceManager: PersistenceManager,
     private val eventPublisher: ApplicationEventPublisher? = null,
     private val clock: Clock = Clock.systemUTC(),
@@ -82,10 +95,15 @@ open class ChatSessionRepositoryImpl(
      * session and waits on the schema locks an open data transaction holds, while that transaction
      * waits to commit. Doing exactly this inside a transactional method deadlocked dice's
      * equivalent — the request never returned and the index was left dropped (embabel/dice#117).
-     * So the DDL sits either side, and only the rewrite is transactional.
+     * So the DDL sits either side of the rewrite.
      *
      * Drop before rewriting rather than remake after: an index left standing through the run
-     * spends it describing a width none of the rewritten vectors have.
+     * spends it describing a width none of the rewritten vectors have. The remake is unconditional
+     * once dropped — it runs whether the rewrite succeeded, stopped short, or threw — so no outcome
+     * leaves message search without an index.
+     *
+     * @throws MessageReembedIncompleteException after the index is restored, when some messages
+     * could not be embedded; everything else was written
      */
     override fun reembedMessages(
         modelName: String,
@@ -100,58 +118,59 @@ open class ChatSessionRepositoryImpl(
             logger.info("Message embedding shape changed; dropping {} and remaking it after the re-embed", spec.effectiveName)
             persistenceManager.indexes.drop(spec)
         }
-        val rewritten = rewriteMessageEmbeddings(modelName, embed)
-        if (shapeChanged) persistenceManager.indexes.ensure(spec)
+        val outcome = runCatching { rewriteMessageEmbeddings(modelName, embed) }
+        val failure = outcome.exceptionOrNull()?.let { e ->
+            if (e is MessageReembedIncompleteException) e.withIndexRecreated(shapeChanged) else e
+        }
+        if (shapeChanged) restoreIndex(spec, failure)
+        if (failure != null) {
+            logger.warn("reembedMessages incomplete: model={} indexRecreated={}: {}", modelName, shapeChanged, failure.message)
+            throw failure
+        }
+        val rewritten = outcome.getOrThrow()
         logger.info("reembedMessages done: messages={} model={} indexRecreated={}", rewritten, modelName, shapeChanged)
         return MessageReembedReport(messages = rewritten, indexRecreated = shapeChanged)
     }
 
     /**
-     * Rewrite every message vector not already made by [modelName], in pages.
-     *
-     * Paged rather than loaded whole: a busy world's message history is the largest thing in this
-     * store, and one `embed` call per page bounds both the request size and the memory held.
-     * Messages already at the current model are filtered in Cypher, so a resumed run does no work
-     * for what it already did.
+     * Remake the message index. A failure here while the rewrite already failed is attached to
+     * that failure rather than replacing it; alone, it is thrown.
      */
-    @Transactional
+    private fun restoreIndex(spec: VectorIndexSpec, pending: Throwable?) {
+        try {
+            persistenceManager.indexes.ensure(spec)
+        } catch (e: Exception) {
+            logger.error("Could not remake message vector index {} after re-embed", spec.effectiveName, e)
+            if (pending == null) throw e
+            pending.addSuppressed(e)
+        }
+    }
+
+    private fun MessageReembedIncompleteException.withIndexRecreated(indexRecreated: Boolean) =
+        MessageReembedIncompleteException(
+            failedMessageIds = failedMessageIds,
+            notAttempted = notAttempted,
+            report = report.copy(indexRecreated = indexRecreated),
+            abandoned = abandoned,
+            cause = cause,
+        )
+
+    /**
+     * Rewrite every message vector not already made by [modelName], in pages; see
+     * [MessageReembedRun] for how failed embed calls are isolated and when a run gives up.
+     *
+     * NOT `@Transactional`. It carried the annotation once, but [reembedMessages] calls it on
+     * `this`, so the proxy never saw the call and it never applied. It is removed rather than made
+     * to work: one transaction around the whole rewrite would roll back every page before a failure
+     * and hold a busy history's writes open at once, and each page committing on its own is what
+     * lets a rerun resume where a failed one stopped.
+     *
+     * @throws MessageReembedIncompleteException when any message was left pending
+     */
     protected open fun rewriteMessageEmbeddings(
         modelName: String,
         embed: (List<String>) -> List<List<Double>>,
-    ): Int {
-        var total = 0
-        while (true) {
-            val page = persistenceManager.query(
-                QuerySpecification
-                    .withStatement(
-                        """
-                        MATCH (m:StoredMessage)
-                        WHERE m.content IS NOT NULL AND m.content <> ''
-                          AND coalesce(m.embeddingModel, '') <> ${'$'}model
-                        RETURN { messageId: m.messageId, content: m.content }
-                        LIMIT ${'$'}limit
-                        """.trimIndent(),
-                    )
-                    .bind(mapOf("model" to modelName, "limit" to REEMBED_PAGE_SIZE))
-                    .transform(MessageText::class.java),
-            )
-            if (page.isEmpty()) break
-            val ids = page.map { it.messageId }
-            val vectors = embed(page.map { it.content })
-            persistenceManager.executeBatch(
-                ids.mapIndexed { i, id ->
-                    QuerySpecification
-                        .withStatement(
-                            "MATCH (m:StoredMessage {messageId: ${'$'}id}) " +
-                                "SET m.embedding = ${'$'}embedding, m.embeddingModel = ${'$'}model",
-                        )
-                        .bind(mapOf("id" to id, "embedding" to vectors[i], "model" to modelName))
-                },
-            )
-            total += ids.size
-        }
-        return total
-    }
+    ): Int = MessageReembedRun(graphObjectManager, modelName, embed, REEMBED_PAGE_SIZE).execute()
 
     @Transactional
     override fun createSession(sessionId: String, owner: StoredUser, title: String?): StoredSession {
@@ -339,8 +358,8 @@ open class ChatSessionRepositoryImpl(
     private fun storedSessionOrders(order: SessionOrder): List<OrderSpec> {
         val session = StoredSessionQueryDsl.INSTANCE.session
         return when (order) {
-            SessionOrder.CREATED -> listOf(session.sessionId.desc())
-            SessionOrder.LAST_ACTIVITY -> listOf(session.lastActivityAt.desc(), session.sessionId.desc())
+            SessionOrder.CREATED -> listOf(session.sessionId.descending())
+            SessionOrder.LAST_ACTIVITY -> listOf(session.lastActivityAt.descending(), session.sessionId.descending())
         }
     }
 
@@ -348,8 +367,8 @@ open class ChatSessionRepositoryImpl(
     private fun sessionSummaryOrders(order: SessionOrder): List<OrderSpec> {
         val session = SessionSummaryQueryDsl.INSTANCE.session
         return when (order) {
-            SessionOrder.CREATED -> listOf(session.sessionId.desc())
-            SessionOrder.LAST_ACTIVITY -> listOf(session.lastActivityAt.desc(), session.sessionId.desc())
+            SessionOrder.CREATED -> listOf(session.sessionId.descending())
+            SessionOrder.LAST_ACTIVITY -> listOf(session.lastActivityAt.descending(), session.sessionId.descending())
         }
     }
 
@@ -362,15 +381,15 @@ open class ChatSessionRepositoryImpl(
         }
     }
 
+    /**
+     * Updates the session node alone, and not the [StoredSession] view: a title change has no use
+     * for the session's messages, and loading the view would fetch every one of them with its
+     * embedding vector.
+     */
     @Transactional
     override fun updateSessionTitle(sessionId: String, title: String) {
-        val session = findBySessionId(sessionId).orElseThrow {
-            IllegalArgumentException("Session not found: $sessionId")
-        }
-        val updated = session.copy(
-            session = session.session.copy(title = title)
-        )
-        graphObjectManager.save(updated)
+        graphObjectManager.update<SessionData>(sessionId) { it.copy(title = title) }
+            ?: throw IllegalArgumentException("Session not found: $sessionId")
     }
 
     @Transactional
@@ -428,10 +447,9 @@ open class ChatSessionRepositoryImpl(
             messageData.messageId, sessionId, attachments.size, assets.size,
         )
 
-        // Verify the session exists and advance its activity in a single statement — MERGE on
-        // SessionRef would silently create a bare node. Folding the two saves a round trip on
-        // the hottest write path, and both are writes in this transaction, so a failure below
-        // rolls the timestamp back along with the message.
+        // Verify the session exists and advance its activity in one update — MERGE on SessionRef
+        // would silently create a bare node. Both are writes in this transaction, so a failure
+        // below rolls the timestamp back along with the message.
         if (!touchSession(sessionId, clock.instant())) {
             throw IllegalArgumentException("Session not found: $sessionId")
         }
@@ -446,7 +464,7 @@ open class ChatSessionRepositoryImpl(
                 assets = assets,
             )
         )
-        graphObjectManager.save(newMessage, CascadeType.PRESERVE)
+        graphObjectManager.save(newMessage)
 
         return findBySessionId(sessionId).orElseThrow {
             IllegalStateException("Session not found after adding message: $sessionId")
@@ -468,20 +486,13 @@ open class ChatSessionRepositoryImpl(
 
     @Transactional
     override fun updateMessageNarration(sessionId: String, messageId: String, narration: String): Boolean {
-        val updated = persistenceManager.getOne(
-            QuerySpecification
-                .withStatement(
-                    """
-                    MATCH (:ChatSession {sessionId: ${'$'}sessionId})
-                          -[:HAS_MESSAGE]->(message:StoredMessage {messageId: ${'$'}messageId})
-                    SET message.narration = ${'$'}narration
-                    RETURN count(message) AS updated
-                    """.trimIndent()
-                )
-                .bind(mapOf("sessionId" to sessionId, "messageId" to messageId, "narration" to narration))
-                .map { (it as Number).toLong() }
-        )
-        if (updated == 0L) {
+        // The message alone, and of it the narration alone, in one statement. A message of another
+        // session does not meet the predicate, and is not written.
+        val result = graphObjectManager.patch<MessageInSession>(messageId) {
+            fields { message.narration setTo narration }
+            where { session.sessionId eq sessionId }
+        }
+        if (!result.applied) {
             logger.warn("Cannot update narration: message {} not found in session {}", messageId, sessionId)
             return false
         }
@@ -509,10 +520,13 @@ open class ChatSessionRepositoryImpl(
             logger.debug("No un-narrated assistant message found in session {}", conversationId)
             return
         }
-        val updated = latestAssistant.copy(
-            message = latestAssistant.message.copy(narration = narration)
+        // The message node alone, and of it the narration alone: the author, the recipient and the
+        // attachments are not written. The message carries the stamp it was loaded with, so the
+        // save is checked.
+        graphObjectManager.save(
+            latestAssistant.message.copy(narration = narration),
+            only = setOf(MessageData::narration),
         )
-        graphObjectManager.save(updated)
         logger.debug("Updated narration for message {} in session {}", latestAssistant.messageId, conversationId)
     }
 
@@ -527,21 +541,16 @@ open class ChatSessionRepositoryImpl(
      * The timestamp only ever moves forward, so clock skew between application instances can
      * leave the ordering slightly stale but can never move a session backwards — which would
      * otherwise let a keyset walk skip or repeat it.
+     *
+     * One statement, and the store compares: of two writers to one session, the later is compared
+     * with what the earlier left. A session from before `lastActivityAt` was stored has none, and
+     * is given this one.
      */
-    private fun touchSession(sessionId: String, activityAt: Instant): Boolean = persistenceManager.getOne(
-        QuerySpecification
-            .withStatement(
-                """
-                MATCH (session:ChatSession {sessionId: ${'$'}sessionId})
-                SET session.lastActivityAt = CASE
-                    WHEN session.lastActivityAt IS NULL OR session.lastActivityAt < ${'$'}activityAt
-                    THEN ${'$'}activityAt ELSE session.lastActivityAt END
-                RETURN count(session) AS found
-                """.trimIndent()
-            )
-            .bind(mapOf("sessionId" to sessionId, "activityAt" to activityAt))
-            .map { (it as Number).toLong() }
-    ) > 0
+    private fun touchSession(sessionId: String, activityAt: Instant): Boolean =
+        graphObjectManager.patch<SessionData>(sessionId) {
+            fields { query.lastActivityAt setTo activityAt }
+            where { anyOf { query.lastActivityAt.isNull(); query.lastActivityAt lt activityAt } }
+        }.found
 
     private fun <T> loadSessionPage(
         page: SessionPageRequest,
@@ -557,17 +566,6 @@ open class ChatSessionRepositoryImpl(
         } else null
         return SessionPage(items, nextCursor)
     }
-
-    /** One row of the re-embed scan: the message to rewrite, and the text to rewrite it from. */
-    /**
-     * One page row, projected as a MAP and not as two columns.
-     *
-     * `transform(Class)` deserializes ONE value per row, so `RETURN a, b` hands Jackson the row as
-     * an array and it fails with "Cannot deserialize ... from Array value". A map literal is the
-     * shape it expects. The error surfaced only against a real database, which is why
-     * [ChatSessionReembedIntegrationTest] talks to one.
-     */
-    data class MessageText(val messageId: String, val content: String)
 
     private companion object {
         /**

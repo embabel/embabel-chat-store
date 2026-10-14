@@ -53,10 +53,17 @@ interface ChatSessionRepository {
      * startup catalog passes the same one here, so the index made at boot and the index remade
      * around a re-embed cannot describe different things.
      *
+     * A failed `embed` call is retried on halves of its batch, down to single messages, so one
+     * message the service refuses costs only itself; the rest are written. The index is remade
+     * however the run ends.
+     *
      * @param modelName what the current model calls itself — written onto each row it rewrites
      * @param spec the message vector index, at the width the current model produces
-     * @param embed turns message content into vectors; called in batches
+     * @param embed turns message content into vectors; called in batches, and must return exactly
+     * one vector per text (any other count is treated as a failed call)
      * @return how many messages were rewritten, and whether the index had to be rebuilt
+     * @throws MessageReembedIncompleteException once the index is restored, when some messages
+     * could not be embedded — naming them, and saying how many were written. Rerun to retry.
      */
     fun reembedMessages(
         modelName: String,
@@ -193,10 +200,12 @@ interface ChatSessionRepository {
     fun countSessionsForUser(userId: String): Long
 
     /**
-     * Update the title of a session.
+     * Update the title of a session. Only the title is written: a message added to the session,
+     * or activity recorded on it, at the same moment is kept.
      *
      * @param sessionId the session ID
      * @param title the new title
+     * @throws IllegalArgumentException when there is no session with this ID
      */
     fun updateSessionTitle(sessionId: String, title: String)
 

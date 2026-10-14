@@ -1,0 +1,10 @@
+# The same datasource, on Oracle: for the tests that run only with ORACLE_TESTS=true.
+# @EnableDrivineTestConfig starts Oracle Free in a container and connects as its user to its service.
+database:
+  datasources:
+    neo:
+      type: ORACLE
+      port: 1521
+      user-name: drivine
+      password: drivine
+      database-name: FREEPDB1

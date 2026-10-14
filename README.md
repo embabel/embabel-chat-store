@@ -4,7 +4,8 @@ Conversation persistence layer for Embabel Agent. Provides pluggable storage bac
 for chat sessions — in-memory for development/testing, and a graph-database backing for
 production. Backed by Drivine and supports **Neo4j 5.x**, **Memgraph 2.x**, and
 **FalkorDB 4.x** out of the box; the matching dialect is detected automatically from
-Drivine's connection type.
+Drivine's connection type. It also runs on **Oracle 23ai**, which Drivine reads with SQL/PGQ:
+see [Oracle](#oracle).
 
 ## Quick Start
 
@@ -239,17 +240,82 @@ stays readable with no migration, and sorts sensibly under `CREATED` — which i
 that is the default ordering.
 
 `LAST_ACTIVITY` needs more: a keyset comparison is never satisfied by a value that is absent in
-the graph, so a session whose property is only defaulted client-side would still drop out of
-every page after the first. `SessionActivityMigration` materialises it, and the
-auto-configuration runs it on startup. It works in bounded batches (the un-backfilled set
-cannot use the range index, since Neo4j does not index nulls), coalesces to an epoch floor so
-sessions with neither messages nor a `createdAt` still converge, and records a marker node so
-later boots cost a single lookup rather than a full label scan. Any session that receives a
-message also repairs itself, since the write advances `lastActivityAt` when it is missing.
+the graph, so a session whose property is only defaulted client-side drops out of every page
+after the first. Every session written since 0.5.0 has the property, and an older one gains it
+when it next receives a message.
 
-So the backfill is a correctness step for one ordering, not a prerequisite for reading. If no
-`PersistenceManager` bean is present it cannot run, and the auto-configuration logs a warning
-saying so; `CREATED` is unaffected either way.
+Releases 0.5.0 and 0.6.0 backfilled the property at startup, for sessions stored before it
+existed. That backfill ran once for a database and has been removed: a database that still
+holds sessions from before 0.5.0 should be started once on 0.6.0 before it is upgraded further.
+
+## Concurrent Writes
+
+`SessionData` and `MessageData` each have a `stamp` field, annotated with Drivine's
+`@NodeStamp`. Loading fills it. A save of a session or message that carries a stamp is applied
+only if the node's properties are as they were when it was loaded, and is otherwise refused
+with `StaleObjectException`. Nothing is written by a refused save.
+
+```kotlin
+val session = repository.findBySessionId(sessionId).get().session
+// ... another writer adds a message, which advances lastActivityAt ...
+graphObjectManager.save(session.copy(title = "New title"))   // StaleObjectException
+```
+
+The repository's own writes need no handling:
+
+| Write | What it does about a concurrent change |
+|---|---|
+| `updateSessionTitle` | Writes only the title. If the session changed after it was loaded, it is loaded again and the title applied to the fresh one. |
+| `addMessage` | Adds the message, and advances `lastActivityAt` on the session node alone, in one statement that compares with the stored value, so it only moves forward. |
+| `updateMessageNarration` | Writes only the narration of the one message, in one statement, and only if the message is in the session named. |
+| `reembedMessages` | Writes only the vector and its model, in one statement per message, so a message changed after its page was loaded keeps the change. |
+
+Treat the stamp as opaque, and leave it null on a session or message you construct. It is part
+of `equals`, `copy`, and any JSON made from these classes directly.
+
+### Cypher of your own
+
+A save notices only a write that replaced the stamp. Cypher that sets a property of a
+`ChatSession` or `StoredMessage` node must therefore set `Stamps.setClause` in the same
+statement:
+
+```kotlin
+"MATCH (m:StoredMessage {messageId: \$id}) SET m.narration = \$narration, ${Stamps.setClause("m")}"
+```
+
+Without it, a save of an object loaded before the statement ran overwrites what it wrote.
+
+The repository itself writes no Cypher: each of its reads and writes goes through Drivine's
+object manager, which marks the stamp and runs on every store Drivine supports.
+
+## Oracle
+
+Oracle does not speak Cypher, and the repository sends it none. Configure the datasource as
+Drivine's README describes (`type: ORACLE`), and add the driver,
+`com.oracle.database.jdbc:ojdbc11`, which Drivine does not bring.
+
+The repository's Oracle tests start Oracle Free in a container, and run only when asked for,
+since the image is large and the database wants two gigabytes:
+
+```bash
+ORACLE_TESTS=true mvn -pl embabel-chat-store test -Dtest=ChatSessionRepositoryOracleTest
+```
+
+### Upgrading from before stamps
+
+`ChatSessionRepositoryImpl` takes a `StatelessGraphObjectManager`, where it took a
+`GraphObjectManager`:
+
+```kotlin
+@Bean
+fun chatSessionRepository(
+    factory: GraphObjectManagerFactory,
+    persistenceManager: PersistenceManager,
+): ChatSessionRepository = ChatSessionRepositoryImpl(factory.stateless(), persistenceManager)
+```
+
+Stored data needs no migration. A session or message stored before stamps loads with a null
+`stamp`, so its first save is not checked, and that save gives the node a stamp.
 
 ## Auto Title Generation
 
@@ -294,6 +360,16 @@ The embedding is stored as two properties on the `:StoredMessage` node:
 
 `embedding` and `embeddingModel` are both nullable. Messages without an embedding
 (failure, no embedder configured, SYSTEM/blank content) just have null values.
+
+When embedding a message fails, the message is still saved, with a null `embeddingModel`, a
+WARN is logged with its id, and a `MessageEmbeddingFailedEvent` (session id, message id, role,
+cause) is published once the write lands. A null model is what `reembedMessages` selects on, so
+the retry is a re-embed run with the current model — `MessageReembedder.reembed(embeddingService)`
+— triggered from a listener for that event or on a schedule. A run only embeds what is pending.
+
+`reembedMessages` splits a failing embed call down to single messages, writes everything that
+embeds, always remakes the message index, and then throws `MessageReembedIncompleteException`
+naming the messages that failed (and, if it gave up on a dead service, how many it never tried).
 
 ### Embedder Configuration
 

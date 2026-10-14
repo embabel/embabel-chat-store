@@ -38,7 +38,7 @@ class RoleFilteringMessageEmbedderTest {
     }
 
     @Test
-    fun `delegates for USER messages by default`() = runBlocking {
+    fun `delegates for USER messages by default`() = runBlocking<Unit> {
         val delegate = delegateReturning(expected)
         val filtered = RoleFilteringMessageEmbedder(delegate)
 
@@ -47,7 +47,7 @@ class RoleFilteringMessageEmbedderTest {
     }
 
     @Test
-    fun `delegates for ASSISTANT messages by default`() = runBlocking {
+    fun `delegates for ASSISTANT messages by default`() = runBlocking<Unit> {
         val delegate = delegateReturning(expected)
         val filtered = RoleFilteringMessageEmbedder(delegate)
 
@@ -56,7 +56,7 @@ class RoleFilteringMessageEmbedderTest {
     }
 
     @Test
-    fun `skips SYSTEM messages by default`() = runBlocking {
+    fun `skips SYSTEM messages by default`() = runBlocking<Unit> {
         val delegate = delegateReturning(expected)
         val filtered = RoleFilteringMessageEmbedder(delegate)
 
@@ -65,7 +65,7 @@ class RoleFilteringMessageEmbedderTest {
     }
 
     @Test
-    fun `skips blank-content messages even when role is permitted`() = runBlocking {
+    fun `skips blank-content messages even when role is permitted`() = runBlocking<Unit> {
         val delegate = delegateReturning(expected)
         val filtered = RoleFilteringMessageEmbedder(delegate)
 
@@ -74,7 +74,7 @@ class RoleFilteringMessageEmbedderTest {
     }
 
     @Test
-    fun `honours a custom role set`() = runBlocking {
+    fun `honours a custom role set`() = runBlocking<Unit> {
         val delegate = delegateReturning(expected)
         val filtered = RoleFilteringMessageEmbedder(delegate, roles = setOf(MessageRole.SYSTEM))
 
