@@ -36,7 +36,10 @@ import com.embabel.chat.store.model.StoredUser
 import com.embabel.chat.store.model.UserRef
 import com.embabel.chat.store.model.deleteAll
 import com.embabel.chat.store.model.loadAll
+import com.embabel.chat.store.model.message
 import com.embabel.chat.store.model.owner
+import com.embabel.chat.store.model.patch
+import com.embabel.chat.store.model.session
 import org.drivine.manager.CascadeType
 import org.drivine.manager.PersistenceManager
 import org.drivine.manager.StatelessGraphObjectManager
@@ -47,6 +50,7 @@ import org.drivine.schema.EnsureResult
 import org.drivine.schema.VectorIndexSpec
 import org.drivine.query.dsl.OrderBuilder
 import org.drivine.query.dsl.OrderSpec
+import org.drivine.query.dsl.anyOf
 import org.drivine.query.dsl.query
 import org.slf4j.LoggerFactory
 import org.springframework.context.ApplicationEventPublisher
@@ -482,12 +486,13 @@ open class ChatSessionRepositoryImpl(
 
     @Transactional
     override fun updateMessageNarration(sessionId: String, messageId: String, narration: String): Boolean {
-        // The message alone, and of it the narration alone. A message of another session is handed
-        // back as it was loaded, which writes nothing.
-        val updated = graphObjectManager.update<MessageInSession>(messageId) {
-            if (it.session.sessionId == sessionId) it.copy(message = it.message.copy(narration = narration)) else it
+        // The message alone, and of it the narration alone, in one statement. A message of another
+        // session does not meet the predicate, and is not written.
+        val result = graphObjectManager.patch<MessageInSession>(messageId) {
+            fields { message.narration setTo narration }
+            where { session.sessionId eq sessionId }
         }
-        if (updated?.session?.sessionId != sessionId) {
+        if (!result.applied) {
             logger.warn("Cannot update narration: message {} not found in session {}", messageId, sessionId)
             return false
         }
@@ -537,14 +542,15 @@ open class ChatSessionRepositoryImpl(
      * leave the ordering slightly stale but can never move a session backwards — which would
      * otherwise let a keyset walk skip or repeat it.
      *
-     * The session node alone is loaded and saved, and the save is checked against the stamp it was
-     * loaded with: of two writers to one session, the later loads again and compares with what the
-     * earlier left.
+     * One statement, and the store compares: of two writers to one session, the later is compared
+     * with what the earlier left. A session from before `lastActivityAt` was stored has none, and
+     * is given this one.
      */
     private fun touchSession(sessionId: String, activityAt: Instant): Boolean =
-        graphObjectManager.update<SessionData>(sessionId) {
-            if (it.lastActivityAt < activityAt) it.copy(lastActivityAt = activityAt) else it
-        } != null
+        graphObjectManager.patch<SessionData>(sessionId) {
+            fields { query.lastActivityAt setTo activityAt }
+            where { anyOf { query.lastActivityAt.isNull(); query.lastActivityAt lt activityAt } }
+        }.found
 
     private fun <T> loadSessionPage(
         page: SessionPageRequest,

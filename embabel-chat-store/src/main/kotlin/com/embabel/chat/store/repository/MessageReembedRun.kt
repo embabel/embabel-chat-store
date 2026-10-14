@@ -18,9 +18,8 @@ package com.embabel.chat.store.repository
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.MessageDataQueryDsl
 import com.embabel.chat.store.model.loadAll
-import org.drivine.StaleObjectException
+import com.embabel.chat.store.model.patch
 import org.drivine.manager.StatelessGraphObjectManager
-import org.drivine.manager.update
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.anyOf
 import org.drivine.query.dsl.not
@@ -135,23 +134,19 @@ internal class MessageReembedRun(
     }
 
     /**
-     * Write one message's vector, and of the message nothing else. The save is checked against the
-     * stamp the page loaded: a message changed since, by a narration for one, is loaded again and
-     * given the vector then.
+     * Write one message's vector, and of the message nothing else, in one statement. A message
+     * changed since the page was loaded, by a narration for one, is written all the same: the
+     * vector and its model are fields no other writer touches.
      *
      * @return false when the message was deleted after the page was loaded
      */
-    private fun write(message: MessageData, vector: FloatArray): Boolean = try {
-        graphObjectManager.save(
-            message.copy(embedding = vector, embeddingModel = modelName),
-            only = setOf(MessageData::embedding, MessageData::embeddingModel),
-        )
-        true
-    } catch (stale: StaleObjectException) {
-        !stale.deleted && graphObjectManager.update<MessageData>(message.messageId) {
-            it.copy(embedding = vector, embeddingModel = modelName)
-        } != null
-    }
+    private fun write(message: MessageData, vector: FloatArray): Boolean =
+        graphObjectManager.patch<MessageData>(message.messageId) {
+            fields {
+                query.embedding setTo vector
+                query.embeddingModel setTo modelName
+            }
+        }.found
 
     private fun loadPendingPage(): List<MessageData> = graphObjectManager.loadAll<MessageData> {
         pending()

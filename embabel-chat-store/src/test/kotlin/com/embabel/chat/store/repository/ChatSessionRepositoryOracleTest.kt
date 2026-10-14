@@ -157,9 +157,7 @@ class ChatSessionRepositoryOracleTest {
         val ids = (1..3).map { UUIDv7.generateString() }
         ids.forEachIndexed { i, id ->
             chatSessionRepository.createSession(id, user, "S$i")
-            // Not on the minute: Drivine 0.1.3 stores such a moment on Oracle without its seconds,
-            // and then cannot load it.
-            repositoryAt(Instant.parse("2040-01-0${i + 1}T00:00:01Z")).addMessage(id, message("m$i"))
+            repositoryAt(Instant.parse("2040-01-0${i + 1}T00:00:00Z")).addMessage(id, message("m$i"))
         }
 
         val firstPage = chatSessionRepository.listSessionsForUser(

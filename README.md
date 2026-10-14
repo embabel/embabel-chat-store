@@ -266,9 +266,9 @@ The repository's own writes need no handling:
 | Write | What it does about a concurrent change |
 |---|---|
 | `updateSessionTitle` | Writes only the title. If the session changed after it was loaded, it is loaded again and the title applied to the fresh one. |
-| `addMessage` | Adds the message, and advances `lastActivityAt` on the session node alone. If the session changed after it was loaded, it is loaded again and compared afresh. |
-| `updateMessageNarration` | Writes only the narration of the one message. If the message changed after it was loaded, it is loaded again and the narration applied to the fresh one. |
-| `reembedMessages` | Writes only the vector and its model. A message changed after its page was loaded is loaded again and given the vector then. |
+| `addMessage` | Adds the message, and advances `lastActivityAt` on the session node alone, in one statement that compares with the stored value, so it only moves forward. |
+| `updateMessageNarration` | Writes only the narration of the one message, in one statement, and only if the message is in the session named. |
+| `reembedMessages` | Writes only the vector and its model, in one statement per message, so a message changed after its page was loaded keeps the change. |
 
 Treat the stamp as opaque, and leave it null on a session or message you construct. It is part
 of `equals`, `copy`, and any JSON made from these classes directly.
