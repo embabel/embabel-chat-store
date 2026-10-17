@@ -51,8 +51,8 @@ import org.drivine.annotation.NodeId
  * ```kotlin
  * persistenceManager.registerSubtype(
  *     StoredUser::class.java,
- *     "MyUser|User",  // Labels sorted alphabetically
- *     MyUser::class.java
+ *     listOf("User", "MyUser"),   // the subtype's labels, in any order
+ *     MyUser::class.java,
  * )
  * ```
  *

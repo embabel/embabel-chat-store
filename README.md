@@ -1,4 +1,10 @@
-# Embabel Chat Store
+<a href="https://hub.embabel.com"><img align="left" src="https://raw.githubusercontent.com/embabel/guide/main/logo.png" width="240"></a>
+
+### **Embabel Chat Store**
+
+![Build](https://github.com/embabel/embabel-chat-store/actions/workflows/maven.yml/badge.svg) [![Embabel](https://img.shields.io/badge/Embabel-Agent_Framework-6C3483?style=for-the-badge)](https://github.com/embabel/embabel-agent) ![Kotlin](https://img.shields.io/badge/kotlin-%237F52FF.svg?style=for-the-badge&logo=kotlin&logoColor=white) ![Spring](https://img.shields.io/badge/spring-%236DB33F.svg?style=for-the-badge&logo=spring&logoColor=white) ![Apache Maven](https://img.shields.io/badge/Apache%20Maven-C71A36?style=for-the-badge&logo=Apache%20Maven&logoColor=white)
+
+<br clear="left"/>
 
 Conversation persistence for the Embabel Agent framework: chat sessions, their messages, who sent
 each one to whom, attachments and assets, keyset paging, and a vector per message. It runs on four
@@ -536,15 +542,19 @@ data class MyUser(
 ) : StoredUser
 ```
 
-Register with Drivine for polymorphic loading:
+Register it with Drivine, so a `User` node with the `MyUser` label loads as a `MyUser`:
 
 ```kotlin
 persistenceManager.registerSubtype(
     StoredUser::class.java,
-    "MyUser|User",  // Labels sorted alphabetically
-    MyUser::class.java
+    listOf("User", "MyUser"),   // the subtype's labels, in any order
+    MyUser::class.java,
 )
 ```
+
+Drivine registers subtypes itself only for a sealed class or a base type annotated with
+`@JsonSubTypes`. `StoredUser` is an interface applications implement, so it is neither, and an
+implementation needs this call.
 
 For simple cases without extra fields, use the built-in `SimpleStoredUser`:
 
