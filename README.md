@@ -90,8 +90,8 @@ from one to another is a configuration change.
 
 ### Oracle
 
-Oracle Database 23ai or later. Oracle does not speak Cypher, and the repository sends it none: it is
-the same class as on the other databases.
+Oracle Database 23ai or later. Oracle does not speak Cypher: Drivine reads it with
+SQL/PGQ and writes rows, and the repository is the same class as on the other databases.
 
 1. Add the JDBC driver. Drivine does not bring it:
 
