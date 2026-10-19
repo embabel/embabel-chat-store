@@ -16,10 +16,11 @@
 package com.embabel.chat.store.adapter
 
 import com.embabel.agent.api.identity.User
-import com.embabel.chat.AssistantMessage
 import com.embabel.chat.AssetTracker
+import com.embabel.chat.AssetView
 import com.embabel.chat.Conversation
 import com.embabel.chat.DurableAsset
+import com.embabel.chat.UserMessage
 import com.embabel.chat.Message
 import com.embabel.chat.MessageRole
 import com.embabel.chat.event.MessageEvent
@@ -30,6 +31,7 @@ import com.embabel.chat.store.event.MessagePersistedEvent
 import com.embabel.chat.store.event.SessionEventAwaiter
 import com.embabel.chat.store.model.AttachmentData
 import com.embabel.chat.store.model.AssetData
+import com.embabel.chat.store.model.ContentPartData
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.StoredSession
 import com.embabel.chat.store.model.StoredUser
@@ -286,11 +288,16 @@ class StoredConversation(
         inReplyTo: String? = null,
     ): String {
         val messageData = MessageData.from(message, messageId = UUIDv7.generateString()).copy(inReplyTo = inReplyTo)
-        // Only AssistantMessage exposes assets; other message roles have none to persist.
-        val messageAssets = (message as? AssistantMessage)?.assets.orEmpty()
+        // User and assistant messages can both carry assets through AssetView.
+        val messageAssets = (message as? AssetView)?.assets.orEmpty()
         val durableAssets = messageAssets.filterIsInstance<DurableAsset>().map {
             AssetData.from(it, messageData.messageId)
         }
+        val contentParts = (message as? UserMessage)
+            ?.takeIf { it.isMultimodal }
+            ?.parts
+            .orEmpty()
+            .mapIndexed { position, part -> ContentPartData.from(part, messageData.messageId, position) }
         if (messageAssets.size != durableAssets.size) {
             logger.warn(
                 "Message {} has {} non-durable assets that will not survive conversation reload",
@@ -338,6 +345,7 @@ class StoredConversation(
                     signal,
                     attachments,
                     durableAssets,
+                    contentParts,
                 )
 
                 // Persisted — remove from pending buffer (DB is now the source of truth)
@@ -454,9 +462,10 @@ class StoredConversation(
         signal: CompletableDeferred<Unit>,
         attachments: List<AttachmentData> = emptyList(),
         assets: List<AssetData> = emptyList(),
+        contentParts: List<ContentPartData> = emptyList(),
     ): StoredSession {
         return try {
-            persistMessage(sessionId, messageData, author, recipient, attachments, assets)
+            persistMessage(sessionId, messageData, author, recipient, attachments, assets, contentParts)
         } catch (e: IllegalArgumentException) {
             if (e.message?.contains("Session not found") != true) throw e
 
@@ -465,7 +474,7 @@ class StoredConversation(
                 sessionId, messageData.messageId
             )
             sessionEventAwaiter.awaitSession(signal)
-            persistMessage(sessionId, messageData, author, recipient, attachments, assets)
+            persistMessage(sessionId, messageData, author, recipient, attachments, assets, contentParts)
         }
     }
 
@@ -478,10 +487,15 @@ class StoredConversation(
         recipient: StoredUser?,
         attachments: List<AttachmentData>,
         assets: List<AssetData>,
-    ): StoredSession = if (assets.isEmpty()) {
+        contentParts: List<ContentPartData>,
+    ): StoredSession = if (assets.isEmpty() && contentParts.isEmpty()) {
         repository.addMessage(sessionId, messageData, author, recipient, attachments)
-    } else {
+    } else if (contentParts.isEmpty()) {
         repository.addMessageWithAssets(sessionId, messageData, author, recipient, attachments, assets)
+    } else {
+        repository.addMessageWithContentParts(
+            sessionId, messageData, author, recipient, attachments, assets, contentParts,
+        )
     }
 
     private data class PendingMessage(
