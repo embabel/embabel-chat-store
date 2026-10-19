@@ -23,6 +23,9 @@ import com.embabel.chat.store.model.StoredUser
  * A message of a [StoredConversation] with the ID it is stored under and, when its writer said
  * so, the ID of the message it answers. In a multi-party conversation, [author] and [recipients]
  * say who wrote it and who it was sent to, which the [Message] alone does not.
+ *
+ * [recipients] are in the order they were given while the message is pending, and in no
+ * particular order once it has been read back from the store.
  */
 data class ConversationEntry @JvmOverloads constructor(
     val messageId: String,

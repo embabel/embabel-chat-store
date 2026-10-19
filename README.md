@@ -310,14 +310,16 @@ conversation.entries.forEach { entry ->
 ```
 
 A data attachment is stored in the graph with its message (`HAS_DATA_ATTACHMENT`), and is deleted
-with its session. Its `type` and `json` are opaque to the store. A message read back lists its
+with its session. Its `type` and `json` are opaque to the store. Make one per message:
+`DataAttachmentData.of` gives each a new ID, and an ID used on two messages is one node, deleted with
+either session. A message read back lists its
 recipients in no particular order.
 
 `ChatSessionRepository.addMessage(sessionId, MessageWrite(...))` and
 `createSessionWithMessage(sessionId, owner, title, MessageWrite(...))` write the same at the
 repository level. A custom `ChatSessionRepository` that implements neither still takes a message with
-one recipient and no data attachment through them, and refuses anything more with
-`IllegalArgumentException`.
+one recipient and no data attachment through them (and, for `createSessionWithMessage`, no file
+attachment), and refuses anything more with `IllegalArgumentException`.
 
 #### Who took part
 

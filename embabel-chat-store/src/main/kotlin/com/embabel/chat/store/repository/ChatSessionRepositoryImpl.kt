@@ -230,7 +230,7 @@ open class ChatSessionRepositoryImpl(
         val message = SimpleStoredMessage(
             message = write.messageData,
             author = write.author,
-            recipients = write.recipients.distinctBy { it.id },
+            recipients = write.distinctRecipients,
             attachments = write.attachments,
             assets = write.assets,
             dataAttachments = write.dataAttachments,
@@ -429,7 +429,7 @@ open class ChatSessionRepositoryImpl(
             message = AttributedMessage(
                 message = messageData,
                 author = write.author?.let { UserRef(it.id) },
-                recipients = write.recipients.map { UserRef(it.id) }.distinct(),
+                recipients = write.distinctRecipients.map { UserRef(it.id) },
                 attachments = write.attachments,
                 assets = write.assets,
                 dataAttachments = write.dataAttachments,

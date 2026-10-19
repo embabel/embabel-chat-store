@@ -21,12 +21,14 @@ import com.embabel.chat.store.model.AttachmentData
 import com.embabel.chat.store.model.AssetData
 import com.embabel.chat.store.model.DataAttachmentData
 import com.embabel.chat.store.model.MessageData
+import com.embabel.chat.store.model.SimpleStoredMessage
 import com.embabel.chat.store.model.StoredUser
 import com.embabel.chat.store.model.TestSessionUser
 import com.embabel.chat.store.util.UUIDv7
 import org.drivine.StaleObjectException
 import org.drivine.manager.PersistenceManager
 import org.drivine.manager.StatelessGraphObjectManager
+import org.drivine.manager.load
 import org.drivine.model.Stamps
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.Assertions.*
@@ -1388,6 +1390,64 @@ class ChatSessionRepositoryImplTest {
 
         assertEquals(0, countNodes("DataAttachment", "dataAttachmentId", record.dataAttachmentId))
         assertEquals(1, countNodes("User", "id", triage.id))
+    }
+
+    @Test
+    fun `a message loaded on its own is built through its primary constructor, keeping every recipient`() {
+        // SimpleStoredMessage also has a deprecated (message, author, recipient) constructor. A
+        // load that picked it could hold one recipient at most.
+        val sessionId = UUIDv7.generateString()
+        chatSessionRepository.createSession(sessionId, testUser)
+        val triage = TestSessionUser(UUIDv7.generateString(), "Triage").also { graphObjectManager.save(it) }
+        val toBoth = message(MessageRole.USER, "both")
+        val toOne = message(MessageRole.ASSISTANT, "one")
+        chatSessionRepository.addMessage(sessionId, MessageWrite(toBoth, testUser, listOf(triage, testUser)))
+        chatSessionRepository.addMessage(sessionId, MessageWrite(toOne, triage, listOf(testUser)))
+
+        val both = graphObjectManager.load<SimpleStoredMessage>(toBoth.messageId)
+        val one = graphObjectManager.load<SimpleStoredMessage>(toOne.messageId)
+
+        assertEquals(setOf(triage.id, testUser.id), both?.recipients?.map { it.id }?.toSet())
+        assertEquals(listOf(testUser.id), one?.recipients?.map { it.id })
+        assertEquals(testUser.id, one?.recipient?.id)
+    }
+
+    @Test
+    fun `a repository without multi-party support takes one recipient named twice as one`() {
+        val delegate = chatSessionRepository
+        val legacy = object : ChatSessionRepository by delegate {
+            override fun addMessage(sessionId: String, write: MessageWrite) =
+                super<ChatSessionRepository>.addMessage(sessionId, write)
+
+            override fun createSessionWithMessage(sessionId: String, owner: StoredUser, title: String?, write: MessageWrite) =
+                super<ChatSessionRepository>.createSessionWithMessage(sessionId, owner, title, write)
+        }
+        val triage = TestSessionUser(UUIDv7.generateString(), "Triage").also { graphObjectManager.save(it) }
+        val sessionId = UUIDv7.generateString()
+
+        legacy.createSessionWithMessage(sessionId, testUser, null, MessageWrite(message(MessageRole.USER, "hi"), testUser, listOf(triage, triage)))
+        legacy.addMessage(sessionId, MessageWrite(message(MessageRole.ASSISTANT, "hello"), triage, listOf(testUser, testUser)))
+
+        assertEquals(
+            listOf(listOf(triage.id), listOf(testUser.id)),
+            chatSessionRepository.getMessages(sessionId).map { message -> message.recipients.map { it.id } },
+        )
+    }
+
+    @Test
+    fun `a data attachment ID used on two messages is one node, deleted with either session`() {
+        val first = UUIDv7.generateString()
+        val second = UUIDv7.generateString()
+        listOf(first, second).forEach { chatSessionRepository.createSession(it, testUser) }
+        val record = DataAttachmentData.of(type = "entity", title = "Shared", json = "{}")
+        listOf(first, second).forEach {
+            chatSessionRepository.addMessage(it, MessageWrite(message(MessageRole.USER, "see"), testUser, dataAttachments = listOf(record)))
+        }
+        assertEquals(1, countNodes("DataAttachment", "dataAttachmentId", record.dataAttachmentId))
+
+        chatSessionRepository.deleteSession(first)
+
+        assertEquals(emptyList<DataAttachmentData>(), chatSessionRepository.getMessages(second).single().dataAttachments)
     }
 
     @Test

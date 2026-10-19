@@ -28,6 +28,10 @@ import java.time.Instant
  * attachment is small and is the content itself, so it is stored here, with the message.
  *
  * Opaque to this module: [type] and [json] are the host's to define and read.
+ *
+ * A data attachment belongs to one message and is deleted with it. Give each message its own
+ * ([of] makes a new ID each time): the same [dataAttachmentId] on two messages is one node, and
+ * deleting either message's session deletes it from both.
  */
 @NodeFragment(labels = ["DataAttachment"])
 data class DataAttachmentData(

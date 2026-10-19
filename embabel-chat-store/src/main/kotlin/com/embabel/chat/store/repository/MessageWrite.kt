@@ -40,4 +40,8 @@ data class MessageWrite @JvmOverloads constructor(
     val attachments: List<AttachmentData> = emptyList(),
     val assets: List<AssetData> = emptyList(),
     val dataAttachments: List<DataAttachmentData> = emptyList(),
-)
+) {
+    /** [recipients] with each named once, by ID, in the order first given. */
+    internal val distinctRecipients: List<StoredUser>
+        get() = recipients.distinctBy { it.id }
+}

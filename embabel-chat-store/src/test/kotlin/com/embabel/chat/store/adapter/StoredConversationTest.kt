@@ -220,6 +220,21 @@ class StoredConversationTest {
     }
 
     @Test
+    fun `a 1-1 message names its author and its one recipient once persisted`() {
+        stubAddMessage(SimpleStoredMessage(MessageData("m-1", MessageRole.USER, "hi", Instant.now())))
+        val conversation = createConversation(title = "Test")
+
+        conversation.addMessage(UserMessage(content = "hi"))
+
+        verify(eventPublisher, timeout(5000)).publishEvent(any<MessagePersistedEvent>())
+        val events = argumentCaptor<Any>()
+        verify(eventPublisher, atLeastOnce()).publishEvent(events.capture())
+        val persisted = events.allValues.filterIsInstance<MessagePersistedEvent>().single()
+        assertEquals(user.id, persisted.authorId)
+        assertEquals(listOf(agent.id), persisted.recipientIds)
+    }
+
+    @Test
     fun `a recipient named twice is sent the message once`() {
         whenever(repository.addMessage(eq(sessionId), any<MessageWrite>())).thenThrow(RuntimeException("held pending"))
         val conversation = createConversation(title = "Test")
