@@ -29,11 +29,13 @@ import com.embabel.chat.store.event.MessagePersistedEvent
 import com.embabel.chat.store.event.SessionEventAwaiter
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.AssetData
+import com.embabel.chat.store.model.DataAttachmentData
 import com.embabel.chat.store.model.SessionData
 import com.embabel.chat.store.model.SimpleStoredMessage
 import com.embabel.chat.store.model.StoredSession
 import com.embabel.chat.store.model.StoredUser
 import com.embabel.chat.store.repository.ChatSessionRepository
+import com.embabel.chat.store.repository.MessageWrite
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -140,6 +142,50 @@ class StoredConversationTest {
         release.countDown()
         assertTrue(bothPersisted.await(5, TimeUnit.SECONDS))
         assertEquals(mapOf(question to null, reply to question), conversation.entries.associate { it.messageId to it.inReplyTo })
+    }
+
+    @Test
+    fun `entries name each message's author, recipients and data attachments, while pending and once persisted`() {
+        val triage = TestUser("agent-2", "Triage")
+        val record = DataAttachmentData.of(type = "entity", title = "Customer Northwind", json = """{"id":"c-1"}""")
+        val release = CountDownLatch(1)
+        val persistedLatch = CountDownLatch(1)
+        val persisted = CopyOnWriteArrayList<SimpleStoredMessage>()
+        whenever(repository.addMessage(eq(sessionId), any<MessageWrite>())).thenAnswer { call ->
+            release.await(5, TimeUnit.SECONDS)
+            val write = call.getArgument<MessageWrite>(1)
+            persisted += SimpleStoredMessage(
+                write.messageData,
+                author = write.author,
+                recipients = write.recipients,
+                dataAttachments = write.dataAttachments,
+            )
+            persistedLatch.countDown()
+            StoredSession(
+                session = SessionData(sessionId = sessionId, title = "Test", createdAt = Instant.now()),
+                owner = user,
+                messages = persisted.toList(),
+            )
+        }
+        whenever(repository.getMessages(sessionId)).thenAnswer { persisted.toList() }
+        val conversation = createConversation(title = "Test")
+
+        conversation.addAttributedMessage(
+            UserMessage(content = "@Bot @Triage look at this"),
+            from = user,
+            recipients = listOf(agent, triage),
+            dataAttachments = listOf(record),
+        )
+
+        fun describe(entry: ConversationEntry) =
+            Triple(entry.author?.id, entry.recipients.map { it.id }, entry.dataAttachments.map { it.dataAttachmentId })
+        val expected = Triple(user.id, listOf(agent.id, triage.id), listOf(record.dataAttachmentId))
+        assertEquals(expected, describe(conversation.entries.single()), "while pending")
+
+        release.countDown()
+        assertTrue(persistedLatch.await(5, TimeUnit.SECONDS))
+        verify(repository, timeout(2000)).addMessage(eq(sessionId), any<MessageWrite>())
+        assertEquals(expected, describe(conversation.entries.single()), "once persisted")
     }
 
     // ==================== Pending buffer tests ====================

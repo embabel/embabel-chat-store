@@ -170,11 +170,11 @@ data class SimpleStoredMessage(
     val author: StoredUser? = null,
 
     /**
-     * The user who should receive this message.
-     * Used for routing (e.g., WebSocket notifications).
+     * The users this message is sent to. One in a 1-1 chat; in a multi-party chat, everyone
+     * the message addresses. Used for routing (e.g., WebSocket notifications).
      */
     @GraphRelationship(type = "SENT_TO", direction = Direction.OUTGOING)
-    val recipient: StoredUser? = null,
+    val recipients: List<StoredUser> = emptyList(),
 
     /**
      * Files attached to this message. Empty for the overwhelming majority of messages;
@@ -187,7 +187,14 @@ data class SimpleStoredMessage(
     /** Durable assets produced with this assistant message. */
     @GraphRelationship(type = "HAS_ASSET", direction = Direction.OUTGOING)
     val assets: List<AssetData> = emptyList(),
+
+    /** Structured data attached to this message. */
+    @GraphRelationship(type = "HAS_DATA_ATTACHMENT", direction = Direction.OUTGOING)
+    val dataAttachments: List<DataAttachmentData> = emptyList(),
 ) : Message {
+    /** The first of [recipients]: the only one in a 1-1 chat. */
+    val recipient: StoredUser? get() = recipients.firstOrNull()
+
     // Convenience accessors for common properties
     val messageId: String get() = message.messageId
     override val role: MessageRole get() = message.role
@@ -221,7 +228,7 @@ data class AttributedMessage(
     val author: UserRef? = null,
 
     @GraphRelationship(type = "SENT_TO", direction = Direction.OUTGOING)
-    val recipient: UserRef? = null,
+    val recipients: List<UserRef> = emptyList(),
 
     /** Files attached to this message. See [SimpleStoredMessage.attachments]. */
     @GraphRelationship(type = "HAS_ATTACHMENT", direction = Direction.OUTGOING)
@@ -230,6 +237,10 @@ data class AttributedMessage(
     /** Durable assets produced with this assistant message. */
     @GraphRelationship(type = "HAS_ASSET", direction = Direction.OUTGOING)
     val assets: List<AssetData> = emptyList(),
+
+    /** Structured data attached to this message. See [SimpleStoredMessage.dataAttachments]. */
+    @GraphRelationship(type = "HAS_DATA_ATTACHMENT", direction = Direction.OUTGOING)
+    val dataAttachments: List<DataAttachmentData> = emptyList(),
 )
 
 /**

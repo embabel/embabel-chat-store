@@ -266,6 +266,30 @@ interface ChatSessionRepository {
     }
 
     /**
+     * Add a message with everything a multi-party chat records about it: its author, every
+     * recipient it addresses, and its file and data attachments and assets.
+     *
+     * The default delegates to [addMessageWithAssets] when there is at most one recipient and
+     * no data attachment, and rejects anything more unless the implementation supports it.
+     *
+     * @throws IllegalArgumentException when several recipients or data attachments are
+     * supplied to an implementation that has not added multi-party support
+     */
+    fun addMessage(sessionId: String, write: MessageWrite): StoredSession {
+        require(write.recipients.size <= 1 && write.dataAttachments.isEmpty()) {
+            "This chat session repository does not support several recipients or data attachments"
+        }
+        return addMessageWithAssets(
+            sessionId = sessionId,
+            messageData = write.messageData,
+            author = write.author,
+            recipient = write.recipients.firstOrNull(),
+            attachments = write.attachments,
+            assets = write.assets,
+        )
+    }
+
+    /**
      * Get all messages in a session.
      *
      * @param sessionId the session ID

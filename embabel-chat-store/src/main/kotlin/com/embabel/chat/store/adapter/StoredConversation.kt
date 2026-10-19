@@ -30,10 +30,12 @@ import com.embabel.chat.store.event.MessagePersistedEvent
 import com.embabel.chat.store.event.SessionEventAwaiter
 import com.embabel.chat.store.model.AttachmentData
 import com.embabel.chat.store.model.AssetData
+import com.embabel.chat.store.model.DataAttachmentData
 import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.StoredSession
 import com.embabel.chat.store.model.StoredUser
 import com.embabel.chat.store.repository.ChatSessionRepository
+import com.embabel.chat.store.repository.MessageWrite
 import com.embabel.chat.support.InMemoryAssetTracker
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -168,8 +170,31 @@ class StoredConversation(
             MessageRole.ASSISTANT -> agent to user
             else -> null to user
         }
-        return addMessageInternal(message, from, to, attachments, inReplyTo)
+        return addMessageInternal(message, from, listOfNotNull(to), attachments, inReplyTo)
     }
+
+    /**
+     * Add a message to a multi-party conversation, saying who wrote it and everyone it is sent
+     * to, with any files and structured data it carries. [entries] reports all of it, before the
+     * write lands and after.
+     *
+     * @param message the message to add
+     * @param from the author of this message
+     * @param recipients everyone the message is sent to
+     * @param attachments files to attach
+     * @param dataAttachments structured data to attach
+     * @param inReplyTo the ID of the message this one answers
+     * @return the message ID
+     */
+    @JvmOverloads
+    fun addAttributedMessage(
+        message: Message,
+        from: StoredUser?,
+        recipients: List<StoredUser>,
+        attachments: List<AttachmentData> = emptyList(),
+        dataAttachments: List<DataAttachmentData> = emptyList(),
+        inReplyTo: String? = null,
+    ): String = addMessageInternal(message, from, recipients, attachments, inReplyTo, dataAttachments)
 
     /**
      * [messages] with the identity each is stored under and the message it answers, for readers
@@ -185,8 +210,13 @@ class StoredConversation(
             val dbMessages = repository.getMessages(id)
             val dbMessageIds = dbMessages.mapTo(HashSet()) { it.messageId }
             val pending = pendingSnapshot.filter { it.messageData.messageId !in dbMessageIds }
-            return dbMessages.map { ConversationEntry(it.messageId, it.toMessage(), it.inReplyTo) } +
-                pending.map { ConversationEntry(it.messageData.messageId, it.message, it.messageData.inReplyTo) }
+            return dbMessages.map {
+                ConversationEntry(it.messageId, it.toMessage(), it.inReplyTo, it.author, it.recipients, it.dataAttachments)
+            } + pending.map {
+                ConversationEntry(
+                    it.messageData.messageId, it.message, it.messageData.inReplyTo, it.author, it.recipients, it.dataAttachments,
+                )
+            }
         }
 
     /**
@@ -231,7 +261,7 @@ class StoredConversation(
             MessageRole.ASSISTANT -> user
             else -> agent
         }
-        addMessageInternal(message, from, to)
+        addMessageInternal(message, from, listOfNotNull(to))
         return message
     }
 
@@ -253,7 +283,7 @@ class StoredConversation(
     ): Message {
         val fromUser = from?.toStoredUser("from")
         val toUser = to?.toStoredUser("to")
-        addMessageInternal(message, fromUser, toUser)
+        addMessageInternal(message, fromUser, listOfNotNull(toUser))
         return message
     }
 
@@ -281,10 +311,13 @@ class StoredConversation(
     private fun addMessageInternal(
         message: Message,
         from: StoredUser?,
-        to: StoredUser?,
+        recipients: List<StoredUser>,
         attachments: List<AttachmentData> = emptyList(),
         inReplyTo: String? = null,
+        dataAttachments: List<DataAttachmentData> = emptyList(),
     ): String {
+        // Message events name one recipient: the first, which is the only one in a 1-1 chat.
+        val to = recipients.firstOrNull()
         val messageData = MessageData.from(message, messageId = UUIDv7.generateString()).copy(inReplyTo = inReplyTo)
         // Only AssistantMessage exposes assets; other message roles have none to persist.
         val messageAssets = (message as? AssistantMessage)?.assets.orEmpty()
@@ -322,7 +355,7 @@ class StoredConversation(
         )
 
         // Add to pending buffer so getMessages() returns this message immediately
-        val pendingMessage = PendingMessage(messageData, message)
+        val pendingMessage = PendingMessage(messageData, message, from, recipients, dataAttachments)
         pendingMessages.add(pendingMessage)
 
         // DB write — asynchronous, non-blocking. The pending buffer ensures
@@ -332,12 +365,8 @@ class StoredConversation(
                 val embedded = embedMessageData(message, messageData)
                 val updatedSession = addMessageWithAwait(
                     id,
-                    embedded.messageData,
-                    from,
-                    to,
+                    MessageWrite(embedded.messageData, from, recipients, attachments, durableAssets, dataAttachments),
                     signal,
-                    attachments,
-                    durableAssets,
                 )
 
                 // Persisted — remove from pending buffer (DB is now the source of truth)
@@ -448,45 +477,42 @@ class StoredConversation(
      */
     private suspend fun addMessageWithAwait(
         sessionId: String,
-        messageData: MessageData,
-        author: StoredUser?,
-        recipient: StoredUser?,
+        write: MessageWrite,
         signal: CompletableDeferred<Unit>,
-        attachments: List<AttachmentData> = emptyList(),
-        assets: List<AssetData> = emptyList(),
     ): StoredSession {
         return try {
-            persistMessage(sessionId, messageData, author, recipient, attachments, assets)
+            persistMessage(sessionId, write)
         } catch (e: IllegalArgumentException) {
             if (e.message?.contains("Session not found") != true) throw e
 
             logger.warn(
                 "Session {} not yet available for message {}, awaiting SessionCreatedEvent",
-                sessionId, messageData.messageId
+                sessionId, write.messageData.messageId
             )
             sessionEventAwaiter.awaitSession(signal)
-            persistMessage(sessionId, messageData, author, recipient, attachments, assets)
+            persistMessage(sessionId, write)
         }
     }
 
-    // Keep asset-free messages on the existing repository path so older implementations
-    // do not need to implement the new asset-aware method.
-    private fun persistMessage(
-        sessionId: String,
-        messageData: MessageData,
-        author: StoredUser?,
-        recipient: StoredUser?,
-        attachments: List<AttachmentData>,
-        assets: List<AssetData>,
-    ): StoredSession = if (assets.isEmpty()) {
-        repository.addMessage(sessionId, messageData, author, recipient, attachments)
-    } else {
-        repository.addMessageWithAssets(sessionId, messageData, author, recipient, attachments, assets)
+    // Keep 1-1 messages on the existing repository paths so older implementations
+    // do not need to implement the newer asset-aware and multi-party methods.
+    private fun persistMessage(sessionId: String, write: MessageWrite): StoredSession = when {
+        write.recipients.size > 1 || write.dataAttachments.isNotEmpty() -> repository.addMessage(sessionId, write)
+        write.assets.isEmpty() -> repository.addMessage(
+            sessionId, write.messageData, write.author, write.recipients.firstOrNull(), write.attachments,
+        )
+        else -> repository.addMessageWithAssets(
+            sessionId, write.messageData, write.author, write.recipients.firstOrNull(), write.attachments, write.assets,
+        )
     }
 
+    /** A message not yet persisted, with what [entries] reports about it until it is. */
     private data class PendingMessage(
         val messageData: MessageData,
         val message: Message,
+        val author: StoredUser? = null,
+        val recipients: List<StoredUser> = emptyList(),
+        val dataAttachments: List<DataAttachmentData> = emptyList(),
     )
 
     companion object {

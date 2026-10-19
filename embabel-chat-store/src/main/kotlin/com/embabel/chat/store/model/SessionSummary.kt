@@ -17,8 +17,10 @@ package com.embabel.chat.store.model
 
 import org.drivine.annotation.Count
 import org.drivine.annotation.Direction
+import org.drivine.annotation.GraphPath
 import org.drivine.annotation.GraphRelationship
 import org.drivine.annotation.GraphView
+import org.drivine.annotation.Hop
 import org.drivine.annotation.Root
 
 /**
@@ -38,6 +40,7 @@ import org.drivine.annotation.Root
  * ```
  * (session:ChatSession)-[:OWNED_BY]->(user:User)
  * (session:ChatSession)-[:HAS_MESSAGE]->(msg:StoredMessage)   // counted, not loaded
+ * (session)-[:HAS_MESSAGE]->(first:StoredMessage)-[:AUTHORED_BY]->(starter:User)   // the earliest message's author
  * ```
  */
 @GraphView
@@ -49,4 +52,14 @@ data class SessionSummary(
 
     @Count(type = "HAS_MESSAGE", direction = Direction.OUTGOING)
     val messageCount: Long,
+
+    /**
+     * Who started the session: the author of its first message, read in the same query. Null for a
+     * session with no message yet, or whose first message has no author.
+     */
+    @GraphPath([
+        Hop("HAS_MESSAGE", Direction.OUTGOING, label = "StoredMessage", orderBy = "messageId"),
+        Hop("AUTHORED_BY", Direction.OUTGOING, label = "User"),
+    ])
+    val startedBy: StoredUser? = null,
 )

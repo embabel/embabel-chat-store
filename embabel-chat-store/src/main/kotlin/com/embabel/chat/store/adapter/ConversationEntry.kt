@@ -16,13 +16,19 @@
 package com.embabel.chat.store.adapter
 
 import com.embabel.chat.Message
+import com.embabel.chat.store.model.DataAttachmentData
+import com.embabel.chat.store.model.StoredUser
 
 /**
  * A message of a [StoredConversation] with the ID it is stored under and, when its writer said
- * so, the ID of the message it answers.
+ * so, the ID of the message it answers. In a multi-party conversation, [author] and [recipients]
+ * say who wrote it and who it was sent to, which the [Message] alone does not.
  */
-data class ConversationEntry(
+data class ConversationEntry @JvmOverloads constructor(
     val messageId: String,
     val message: Message,
     val inReplyTo: String?,
+    val author: StoredUser? = null,
+    val recipients: List<StoredUser> = emptyList(),
+    val dataAttachments: List<DataAttachmentData> = emptyList(),
 )

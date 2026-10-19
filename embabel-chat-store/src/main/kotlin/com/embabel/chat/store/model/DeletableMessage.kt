@@ -38,6 +38,7 @@ import org.drivine.annotation.Root
  * ```
  * (msg:StoredMessage)-[:HAS_ATTACHMENT]->(att:Attachment)
  * (msg:StoredMessage)-[:HAS_ASSET]->(asset:StoredAsset)
+ * (msg:StoredMessage)-[:HAS_DATA_ATTACHMENT]->(data:DataAttachment)
  * ```
  *
  * @see DeletableSession for the session-level cascade this composes into
@@ -61,4 +62,10 @@ data class DeletableMessage(
      */
     @GraphRelationship(type = "HAS_ASSET", direction = Direction.OUTGOING)
     val assets: List<AssetData> = emptyList(),
+
+    /**
+     * The message's structured data attachments, deleted with it.
+     */
+    @GraphRelationship(type = "HAS_DATA_ATTACHMENT", direction = Direction.OUTGOING)
+    val dataAttachments: List<DataAttachmentData> = emptyList(),
 )
