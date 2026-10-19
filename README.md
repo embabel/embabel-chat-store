@@ -7,7 +7,7 @@
 <br clear="left"/>
 
 Conversation persistence for the Embabel Agent framework: chat sessions, their messages, who sent
-each one to whom, attachments and assets, keyset paging, and a vector per message. It runs on four
+each one to whom, attachments, structured data and assets, keyset paging, and a vector per message. It runs on four
 databases through [Drivine4j](https://github.com/liberation-data/drivine4j), and in memory for
 development and tests.
 
@@ -149,8 +149,9 @@ through **`ChatSessionRepository`**: sessions, messages, paging, titles, narrati
 ### Drivine
 
 The model is a set of Drivine `@NodeFragment`s (`ChatSession`, `StoredMessage`, `User`,
-`StoredAsset`) and `@GraphView`s that load a node with what it is related to: a session with its owner
-and messages, a message with its author, recipient, attachments and assets. `ChatSessionRepositoryImpl`
+`StoredAsset`, `DataAttachment`) and `@GraphView`s that load a node with what it is related to: a session
+with its owner and messages, a message with its author, recipients, attachments, data attachments and
+assets. `ChatSessionRepositoryImpl`
 reads and writes them through Drivine's `StatelessGraphObjectManager` and the query DSL Drivine
 generates at build time, so it holds no Cypher or SQL of its own. Drivine writes the statement for the
 configured database: Cypher for Neo4j, FalkorDB and Memgraph, SQL/PGQ for Oracle.
@@ -213,10 +214,14 @@ fun onMessage(event: MessageEvent) {
 |-------|-------------|
 | `conversationId` | Session ID |
 | `fromUserId` | Who sent the message |
-| `toUserId` | Who should receive it (for routing) |
+| `toUserId` | Who should receive it (for routing). A message sent to several recipients names the first |
 | `title` | Session title (for UI display) |
 | `message` | The message content |
 | `status` | ADDED, PERSISTED, or PERSISTENCE_FAILED |
+
+`MessageEvent` has room for one recipient. Once a message is persisted, a `MessagePersistedEvent`
+follows with its ID, its `authorId` and every one of its `recipientIds`, for listeners that route a
+multi-party message to each recipient.
 
 ## Message Attribution
 
@@ -224,7 +229,7 @@ Messages have explicit sender and recipient:
 
 ```
 (message:StoredMessage)-[:AUTHORED_BY]->(from:User)
-(message:StoredMessage)-[:SENT_TO]->(to:User)
+(message:StoredMessage)-[:SENT_TO]->(to:User)          // one per recipient
 ```
 
 ### Role-Based Routing (1-1 Chats)
@@ -273,13 +278,53 @@ conversation.addMessageFromTo(
 )
 ```
 
-#### Future Enhancements
+#### Several recipients and structured data
 
-Planned support for:
-- Group recipients (send to multiple users at once)
-- Participant lists on conversations
-- Agent-to-agent communication patterns
-- Broadcast messages
+`addAttributedMessage` names the author and every recipient of a message, and can attach structured
+data as well as files. It returns the message's ID:
+
+```kotlin
+val conversation = factory.create(sessionId) as StoredConversation
+
+val record = DataAttachmentData.of(
+    type = "entity",                      // the host's own vocabulary
+    title = "Customer Northwind",
+    json = """{"id":"c-1","risk":0.8}""",
+)
+val questionId = conversation.addAttributedMessage(
+    UserMessage("@Triage @Steward is this customer at risk?"),
+    from = alice,
+    recipients = listOf(triageAgent, stewardAgent),
+    dataAttachments = listOf(record),
+)
+conversation.addAttributedMessage(
+    AssistantMessage("Yes, three invoices are overdue."),
+    from = triageAgent,
+    recipients = listOf(alice),
+    inReplyTo = questionId,
+)
+
+conversation.entries.forEach { entry ->
+    println("${entry.author?.displayName} -> ${entry.recipients.map { it.displayName }}: ${entry.message.content}")
+}
+```
+
+A data attachment is stored in the graph with its message (`HAS_DATA_ATTACHMENT`), and is deleted
+with its session. Its `type` and `json` are opaque to the store. A message read back lists its
+recipients in no particular order.
+
+`ChatSessionRepository.addMessage(sessionId, MessageWrite(...))` and
+`createSessionWithMessage(sessionId, owner, title, MessageWrite(...))` write the same at the
+repository level. A custom `ChatSessionRepository` that implements neither still takes a message with
+one recipient and no data attachment through them, and refuses anything more with
+`IllegalArgumentException`.
+
+#### Who took part
+
+- `ChatSessionRepository.getParticipants(sessionId)` lists everyone who wrote in a session.
+- `SessionSummary.startedBy` is the author of the earliest message that has one, read in the same
+  query as the rest of the summary. A message with no author, such as a system greeting, is passed
+  over; a session in which nobody has written yet has none.
 
 ## Sorting and Pagination
 
@@ -335,8 +380,8 @@ do {
 ```
 
 `nextCursor` is null on the last page. Use `listSessionSummariesForUser` for the same paging
-over lightweight summaries — owner plus a message count computed in the query, without
-loading message bodies.
+over lightweight summaries — owner, a message count and who started the session, computed in the
+query, without loading message bodies.
 
 Cursors are **opaque**: a versioned, Base64URL-encoded binary payload. Do not parse or
 construct them. Each cursor also records the `SessionOrder` that issued it, and is rejected

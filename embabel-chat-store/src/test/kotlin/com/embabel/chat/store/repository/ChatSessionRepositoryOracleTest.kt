@@ -203,6 +203,35 @@ class ChatSessionRepositoryOracleTest {
     }
 
     @Test
+    fun `a session opened by a message with no author is started by whoever first wrote in it`() {
+        val greeted = UUIDv7.generateString()
+        val unattended = UUIDv7.generateString()
+        chatSessionRepository.createSessionWithMessage(greeted, user, null, MessageWrite(message("welcome", MessageRole.SYSTEM)))
+        chatSessionRepository.addMessage(greeted, MessageWrite(message("hi"), user))
+        chatSessionRepository.createSessionWithMessage(unattended, user, null, MessageWrite(message("welcome", MessageRole.SYSTEM)))
+
+        val startedBy = chatSessionRepository.listSessionSummariesForUser(user.id).associate { it.session.sessionId to it.startedBy?.id }
+
+        assertEquals(mapOf(greeted to user.id, unattended to null), startedBy)
+    }
+
+    @Test
+    fun `a session's first message can be sent to several recipients and carry data`() {
+        val sessionId = UUIDv7.generateString()
+        val triage = TestSessionUser(UUID.randomUUID().toString(), "Triage").also { graphObjectManager.save(it) }
+        val record = DataAttachmentData.of(type = "entity", title = "Customer Northwind", json = """{"id":"c-1"}""")
+
+        chatSessionRepository.createSessionWithMessage(
+            sessionId, user, "Opened to two",
+            MessageWrite(message("look"), author = user, recipients = listOf(triage, user), dataAttachments = listOf(record)),
+        )
+
+        val reloaded = chatSessionRepository.getMessages(sessionId).single()
+        assertEquals(setOf(triage.id, user.id), reloaded.recipients.map { it.id }.toSet())
+        assertEquals(listOf(record.json), reloaded.dataAttachments.map { it.json })
+    }
+
+    @Test
     fun `sessions are paged by activity`() {
         val ids = (1..3).map { UUIDv7.generateString() }
         ids.forEachIndexed { i, id ->

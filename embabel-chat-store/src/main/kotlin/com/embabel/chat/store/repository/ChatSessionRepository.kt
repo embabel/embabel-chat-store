@@ -137,6 +137,38 @@ interface ChatSessionRepository {
     }
 
     /**
+     * Create a new session with an initial message carrying everything [addMessage] taking a
+     * [MessageWrite] records: its author, every recipient, and its file and data attachments and
+     * assets.
+     *
+     * The default delegates to [createSessionWithMessageAndAssets] when there is at most one
+     * recipient and no file or data attachment, which that method has no way to carry, and
+     * rejects anything more unless the implementation supports it.
+     *
+     * @throws IllegalArgumentException when several recipients, file attachments or data
+     * attachments are supplied to an implementation that has not added support for them
+     */
+    fun createSessionWithMessage(
+        sessionId: String,
+        owner: StoredUser,
+        title: String?,
+        write: MessageWrite,
+    ): StoredSession {
+        require(write.recipients.size <= 1 && write.attachments.isEmpty() && write.dataAttachments.isEmpty()) {
+            "This chat session repository does not support several recipients or attachments on a session's first message"
+        }
+        return createSessionWithMessageAndAssets(
+            sessionId = sessionId,
+            owner = owner,
+            title = title,
+            messageData = write.messageData,
+            messageAuthor = write.author,
+            messageRecipient = write.recipients.firstOrNull(),
+            assets = write.assets,
+        )
+    }
+
+    /**
      * Find a session by its ID.
      *
      * @param sessionId the session ID

@@ -24,7 +24,14 @@ import com.embabel.chat.store.model.StoredUser
 /**
  * One message to add to a session, with who wrote it, who it is sent to, and what it carries.
  *
+ * @param messageData the message node to write
+ * @param author who wrote the message; null for one with no author, such as a system message
+ * @param recipients everyone the message is sent to; a recipient named twice is stored once
+ * @param attachments files attached to the message
+ * @param assets durable asset metadata produced with an assistant message
+ * @param dataAttachments structured data attached to the message
  * @see ChatSessionRepository.addMessage
+ * @see ChatSessionRepository.createSessionWithMessage
  */
 data class MessageWrite @JvmOverloads constructor(
     val messageData: MessageData,

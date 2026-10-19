@@ -28,14 +28,22 @@ import java.time.Instant
  * which enrichment keyed by message ID — narration, for instance — is safe, because the
  * message is known to be persisted rather than merely queued.
  *
+ * It also names everyone the message was sent to. [com.embabel.chat.event.MessageEvent] has room
+ * for one recipient, and carries the first, so a listener routing a multi-party message to each
+ * recipient reads [recipientIds] here.
+ *
  * @param sessionId the session the message belongs to
  * @param messageId the ID the message was stored under
  * @param role the role of the persisted message, so listeners can filter without a read
  * @param timestamp when the event occurred
+ * @param authorId the ID of the message's author, or null for a message with none
+ * @param recipientIds the IDs of everyone the message was sent to, in the order they were given
  */
-data class MessagePersistedEvent(
+data class MessagePersistedEvent @JvmOverloads constructor(
     val sessionId: String,
     val messageId: String,
     val role: MessageRole,
-    override val timestamp: Instant = Instant.now()
+    override val timestamp: Instant = Instant.now(),
+    val authorId: String? = null,
+    val recipientIds: List<String> = emptyList(),
 ) : ChatStoreEvent

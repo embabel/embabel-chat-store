@@ -24,8 +24,8 @@ import org.drivine.annotation.Hop
 import org.drivine.annotation.Root
 
 /**
- * Lightweight session view for list displays: the session, its owner, and a
- * [messageCount] computed in the query — without loading the messages themselves.
+ * Lightweight session view for list displays: the session, its owner, a [messageCount] and who
+ * [startedBy] the session, computed in the query — without loading the messages themselves.
  *
  * Rendering a user's session list needs each session's title, owner, and a "N
  * messages" badge, but not the message bodies. Loading [StoredSession] would pull
@@ -40,7 +40,7 @@ import org.drivine.annotation.Root
  * ```
  * (session:ChatSession)-[:OWNED_BY]->(user:User)
  * (session:ChatSession)-[:HAS_MESSAGE]->(msg:StoredMessage)   // counted, not loaded
- * (session)-[:HAS_MESSAGE]->(first:StoredMessage)-[:AUTHORED_BY]->(starter:User)   // the earliest message's author
+ * (session)-[:HAS_MESSAGE]->(first:StoredMessage)-[:AUTHORED_BY]->(starter:User)   // the earliest authored message's author
  * ```
  */
 @GraphView
@@ -54,8 +54,12 @@ data class SessionSummary(
     val messageCount: Long,
 
     /**
-     * Who started the session: the author of its first message, read in the same query. Null for a
-     * session with no message yet, or whose first message has no author.
+     * Who started the session: the author of the earliest message that has one, read in the same
+     * query. A message with no author — a system message opening the session, say — is passed
+     * over, so a session opened by a greeting is started by whoever first wrote in it. Null for a
+     * session in which no message has an author yet.
+     *
+     * Messages are taken in `messageId` order, the order a session's messages are read in.
      */
     @GraphPath([
         Hop("HAS_MESSAGE", Direction.OUTGOING, label = "StoredMessage", orderBy = "messageId"),

@@ -51,7 +51,8 @@ import org.springframework.context.ApplicationEventPublisher
  *
  * [StoredConversation.entries] says who wrote each message and who it was sent to. A session's
  * participants are everyone who wrote in it ([ChatSessionRepository.getParticipants]), and who
- * started it is the author of its first message ([com.embabel.chat.store.model.SessionSummary.startedBy]).
+ * started it is the author of its earliest message that has one
+ * ([com.embabel.chat.store.model.SessionSummary.startedBy]).
  *
  * @param repository the repository for persistence operations
  * @param sessionEventAwaiter awaiter for handling session creation race conditions
@@ -76,7 +77,8 @@ class StoredConversationFactory @JvmOverloads constructor(
     /**
      * Create a conversation with no default participants.
      *
-     * Use [StoredConversation.addMessageFromTo] to specify from/to per message.
+     * Use [StoredConversation.addMessageFromTo] to specify from/to per message, or
+     * [StoredConversation.addAttributedMessage] for a message sent to several recipients.
      */
     override fun create(id: String): Conversation {
         return createInternal(id, user = null, agent = null)

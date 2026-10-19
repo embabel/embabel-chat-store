@@ -144,12 +144,14 @@ data class MessageData(
  * This is a GraphView that includes:
  * - The message node data ([MessageData])
  * - The optional author relationship (who sent the message)
- * - The optional recipient relationship (who should receive the message)
+ * - The recipient relationships (who should receive the message; several in a multi-party chat)
+ * - File attachments, durable assets and structured data attachments
  *
  * Example Neo4j structure:
  * ```
  * (msg:StoredMessage)-[:AUTHORED_BY]->(from:User)
- * (msg:StoredMessage)-[:SENT_TO]->(to:User)
+ * (msg:StoredMessage)-[:SENT_TO]->(to:User)                    // one per recipient
+ * (msg:StoredMessage)-[:HAS_DATA_ATTACHMENT]->(data:DataAttachment)
  * ```
  *
  * If you don't need relationships loaded, you can use [MessageData] directly
@@ -172,6 +174,9 @@ data class SimpleStoredMessage(
     /**
      * The users this message is sent to. One in a 1-1 chat; in a multi-party chat, everyone
      * the message addresses. Used for routing (e.g., WebSocket notifications).
+     *
+     * A message read back from the store lists its recipients in no particular order, not
+     * necessarily the order they were written in.
      */
     @GraphRelationship(type = "SENT_TO", direction = Direction.OUTGOING)
     val recipients: List<StoredUser> = emptyList(),
@@ -192,7 +197,24 @@ data class SimpleStoredMessage(
     @GraphRelationship(type = "HAS_DATA_ATTACHMENT", direction = Direction.OUTGOING)
     val dataAttachments: List<DataAttachmentData> = emptyList(),
 ) : Message {
-    /** The first of [recipients]: the only one in a 1-1 chat. */
+    /**
+     * A message with at most one recipient, as constructed before a message could have several.
+     * Kept so that code written then, positional or naming `recipient`, still compiles.
+     */
+    @Deprecated(
+        "A message may have several recipients",
+        ReplaceWith("SimpleStoredMessage(message, author, listOfNotNull(recipient))"),
+    )
+    constructor(
+        message: MessageData,
+        author: StoredUser?,
+        recipient: StoredUser?,
+    ) : this(message, author, listOfNotNull(recipient))
+
+    /**
+     * The first of [recipients]: the only one in a 1-1 chat. In a multi-party chat it is one of
+     * them, and which one is not defined once the message has been read back; use [recipients].
+     */
     val recipient: StoredUser? get() = recipients.firstOrNull()
 
     // Convenience accessors for common properties

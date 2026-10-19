@@ -66,6 +66,10 @@ import java.util.concurrent.ConcurrentLinkedQueue
  * - ASSISTANT messages: from=[agent], to=[user]
  * - SYSTEM messages: from=null, to=[user]
  *
+ * [addMessageFromTo] names the author and one recipient explicitly. [addAttributedMessage] names
+ * the author and every recipient of a message in a multi-party chat, with any structured data
+ * ([DataAttachmentData]) it carries; [entries] reports who wrote and received each message.
+ *
  * ## Auto Title Generation
  *
  * An interim title is set from the first user message content so the session appears
@@ -176,7 +180,16 @@ class StoredConversation(
     /**
      * Add a message to a multi-party conversation, saying who wrote it and everyone it is sent
      * to, with any files and structured data it carries. [entries] reports all of it, before the
-     * write lands and after.
+     * write lands and after. A recipient named twice is sent the message once.
+     *
+     * The [MessageEvent]s published for the message have room for one recipient and name the
+     * first; [MessagePersistedEvent.recipientIds] names them all, for listeners that route the
+     * message to each.
+     *
+     * Several recipients or a data attachment need a [ChatSessionRepository] that implements
+     * [ChatSessionRepository.addMessage] taking a [MessageWrite], as `ChatSessionRepositoryImpl`
+     * does. With one that does not, the write fails and is reported as PERSISTENCE_FAILED, and the
+     * message stays pending.
      *
      * @param message the message to add
      * @param from the author of this message
@@ -194,7 +207,7 @@ class StoredConversation(
         attachments: List<AttachmentData> = emptyList(),
         dataAttachments: List<DataAttachmentData> = emptyList(),
         inReplyTo: String? = null,
-    ): String = addMessageInternal(message, from, recipients, attachments, inReplyTo, dataAttachments)
+    ): String = addMessageInternal(message, from, recipients.distinctBy { it.id }, attachments, inReplyTo, dataAttachments)
 
     /**
      * [messages] with the identity each is stored under and the message it answers, for readers
@@ -268,7 +281,8 @@ class StoredConversation(
     /**
      * Add a message with explicit author and recipient.
      *
-     * Use this for multi-party chats where both sender and receiver need to be specified.
+     * Use this for multi-party chats where both sender and receiver need to be specified. For a
+     * message sent to several recipients, use [addAttributedMessage].
      *
      * @param message the message to add
      * @param from the author of this message (who sent it, must be StoredUser for persistence)
@@ -316,7 +330,8 @@ class StoredConversation(
         inReplyTo: String? = null,
         dataAttachments: List<DataAttachmentData> = emptyList(),
     ): String {
-        // Message events name one recipient: the first, which is the only one in a 1-1 chat.
+        // MessageEvent has room for one recipient: the first, which is the only one in a 1-1 chat.
+        // MessagePersistedEvent names them all.
         val to = recipients.firstOrNull()
         val messageData = MessageData.from(message, messageId = UUIDv7.generateString()).copy(inReplyTo = inReplyTo)
         // Only AssistantMessage exposes assets; other message roles have none to persist.
@@ -382,7 +397,13 @@ class StoredConversation(
                     // Carries the message ID, which MessageEvent cannot: listeners doing
                     // enrichment keyed by ID need to know the write has landed.
                     eventPublisher?.publishEvent(
-                        MessagePersistedEvent(id, messageData.messageId, message.role)
+                        MessagePersistedEvent(
+                            sessionId = id,
+                            messageId = messageData.messageId,
+                            role = message.role,
+                            authorId = from?.id,
+                            recipientIds = recipients.map { it.id },
+                        )
                     )
                     logger.debug("Message {} persisted to session {}", messageData.messageId, id)
                 } catch (e: Exception) {

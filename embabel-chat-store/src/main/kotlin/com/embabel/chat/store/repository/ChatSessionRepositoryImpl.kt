@@ -201,14 +201,8 @@ open class ChatSessionRepositoryImpl(
         messageData: MessageData,
         messageAuthor: StoredUser?,
         messageRecipient: StoredUser?
-    ): StoredSession = createSessionWithMessageInternal(
-        sessionId = sessionId,
-        owner = owner,
-        title = title,
-        messageData = messageData,
-        messageAuthor = messageAuthor,
-        messageRecipient = messageRecipient,
-        assets = emptyList(),
+    ): StoredSession = createSessionWithMessage(
+        sessionId, owner, title, MessageWrite(messageData, messageAuthor, listOfNotNull(messageRecipient)),
     )
 
     @Transactional
@@ -220,32 +214,26 @@ open class ChatSessionRepositoryImpl(
         messageAuthor: StoredUser?,
         messageRecipient: StoredUser?,
         assets: List<AssetData>,
-    ): StoredSession = createSessionWithMessageInternal(
-        sessionId = sessionId,
-        owner = owner,
-        title = title,
-        messageData = messageData,
-        messageAuthor = messageAuthor,
-        messageRecipient = messageRecipient,
-        assets = assets,
+    ): StoredSession = createSessionWithMessage(
+        sessionId, owner, title, MessageWrite(messageData, messageAuthor, listOfNotNull(messageRecipient), assets = assets),
     )
 
-    private fun createSessionWithMessageInternal(
+    @Transactional
+    override fun createSessionWithMessage(
         sessionId: String,
         owner: StoredUser,
         title: String?,
-        messageData: MessageData,
-        messageAuthor: StoredUser?,
-        messageRecipient: StoredUser?,
-        assets: List<AssetData>,
+        write: MessageWrite,
     ): StoredSession {
         logger.debug("Creating session {} with initial message for owner {}", sessionId, owner.id)
 
         val message = SimpleStoredMessage(
-            message = messageData,
-            author = messageAuthor,
-            recipients = listOfNotNull(messageRecipient),
-            assets = assets,
+            message = write.messageData,
+            author = write.author,
+            recipients = write.recipients.distinctBy { it.id },
+            attachments = write.attachments,
+            assets = write.assets,
+            dataAttachments = write.dataAttachments,
         )
 
         val now = clock.instant()
@@ -441,7 +429,7 @@ open class ChatSessionRepositoryImpl(
             message = AttributedMessage(
                 message = messageData,
                 author = write.author?.let { UserRef(it.id) },
-                recipients = write.recipients.map { UserRef(it.id) },
+                recipients = write.recipients.map { UserRef(it.id) }.distinct(),
                 attachments = write.attachments,
                 assets = write.assets,
                 dataAttachments = write.dataAttachments,
