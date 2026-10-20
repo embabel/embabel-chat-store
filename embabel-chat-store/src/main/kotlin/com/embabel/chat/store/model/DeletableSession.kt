@@ -29,7 +29,7 @@ import org.drivine.annotation.Root
  *
  * Deliberately narrow:
  * - The child is [DeletableMessage], which carries the `:StoredMessage` node and its
- *   HAS_ATTACHMENT and HAS_ASSET children — but **not** [SimpleStoredMessage] (which carries
+ *   HAS_ATTACHMENT, HAS_ASSET and HAS_DATA_ATTACHMENT children — but **not** [SimpleStoredMessage] (which carries
  *   AUTHORED_BY/SENT_TO → [StoredUser]). A DETACH DELETE of each message node drops
  *   those edges while leaving the `:User` nodes intact.
  * - The OWNED_BY owner is omitted entirely. Because the view declares only
@@ -43,6 +43,7 @@ import org.drivine.annotation.Root
  * ```
  * (session:ChatSession)-[:HAS_MESSAGE]->(msg:StoredMessage)-[:HAS_ATTACHMENT]->(att:Attachment)
  *                                                    \-[:HAS_ASSET]->(asset:StoredAsset)
+ *                                                    \-[:HAS_DATA_ATTACHMENT]->(data:DataAttachment)
  * ```
  *
  * @see com.embabel.chat.store.model.StoredSession for the full read view

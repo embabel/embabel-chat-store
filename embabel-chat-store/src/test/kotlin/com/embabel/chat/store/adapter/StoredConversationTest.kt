@@ -258,6 +258,44 @@ class StoredConversationTest {
         verify(repository, never()).addMessage(any(), any<MessageWrite>())
     }
 
+    @Test
+    fun `a message with one recipient and data goes through the multi-party write`() {
+        whenever(repository.addMessage(eq(sessionId), any<MessageWrite>())).thenThrow(RuntimeException("held pending"))
+        val record = DataAttachmentData.of(type = "view", title = "v", json = "{}")
+        val conversation = createConversation(title = "Test")
+
+        conversation.addAttributedMessage(UserMessage(content = "hi"), from = user, recipients = listOf(agent), dataAttachments = listOf(record))
+
+        val write = argumentCaptor<MessageWrite>()
+        verify(repository, timeout(2000)).addMessage(eq(sessionId), write.capture())
+        assertEquals(listOf(record), write.firstValue.dataAttachments)
+        verify(repository, never()).addMessage(any(), any(), any(), any(), any())
+    }
+
+    @Test
+    fun `a multi-party message to a repository without multi-party support fails and stays pending`() {
+        val triage = TestUser("agent-2", "Triage")
+        whenever(repository.addMessage(eq(sessionId), any<MessageWrite>())).thenCallRealMethod()
+        whenever(repository.getMessages(sessionId)).thenReturn(emptyList())
+        val conversation = createConversation(title = "Test")
+
+        val messageId = conversation.addAttributedMessage(
+            UserMessage(content = "@Bot @Triage look"),
+            from = user,
+            recipients = listOf(agent, triage),
+        )
+
+        val events = argumentCaptor<Any>()
+        verify(eventPublisher, timeout(5000).times(2)).publishEvent(events.capture())
+        val failed = events.allValues.filterIsInstance<MessageEvent>().single { it.status == MessageStatus.PERSISTENCE_FAILED }
+        assertEquals(agent.id, failed.toUserId)
+        assertTrue(failed.error is IllegalArgumentException)
+        assertTrue(events.allValues.none { it is MessagePersistedEvent })
+        val pending = conversation.entries.single()
+        assertEquals(messageId, pending.messageId)
+        assertEquals(listOf(agent.id, triage.id), pending.recipients.map { it.id })
+    }
+
     // ==================== Pending buffer tests ====================
 
     @Test

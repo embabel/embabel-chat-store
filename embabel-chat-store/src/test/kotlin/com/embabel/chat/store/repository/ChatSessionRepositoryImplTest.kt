@@ -581,6 +581,29 @@ class ChatSessionRepositoryImplTest {
                 MessageWrite(message(MessageRole.USER, "both"), testUser, listOf(triage, testUser)),
             )
         }
+        assertThrows(IllegalArgumentException::class.java) {
+            legacy.createSessionWithMessage(
+                UUIDv7.generateString(), testUser, null,
+                MessageWrite(
+                    message(MessageRole.USER, "file"), testUser,
+                    attachments = listOf(
+                        AttachmentData.of(
+                            filename = "a.txt",
+                            mimeType = "text/plain",
+                            sizeBytes = 1,
+                            contentHash = "c".repeat(64),
+                            storageUri = "world://uploads/a.txt",
+                        ),
+                    ),
+                ),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            legacy.createSessionWithMessage(
+                UUIDv7.generateString(), testUser, null,
+                MessageWrite(message(MessageRole.USER, "data"), testUser, dataAttachments = listOf(DataAttachmentData.of("view", "v", "{}"))),
+            )
+        }
     }
 
     private fun message(role: MessageRole, content: String) =
@@ -1362,11 +1385,7 @@ class ChatSessionRepositoryImplTest {
             ),
         )
 
-        val found = chatSessionRepository.getMessages(sessionId).single().dataAttachments.single()
-        assertEquals(record.dataAttachmentId, found.dataAttachmentId)
-        assertEquals("entity", found.type)
-        assertEquals("Customer Northwind", found.title)
-        assertEquals(record.json, found.json)
+        assertEquals(record, chatSessionRepository.getMessages(sessionId).single().dataAttachments.single())
         assertEquals(1, countNodes("DataAttachment", "dataAttachmentId", record.dataAttachmentId))
     }
 
