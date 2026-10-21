@@ -31,12 +31,17 @@ import java.time.Instant
  */
 @NodeFragment(labels = ["ChatSession"])
 @RangeIndex(properties = ["lastActivityAt"])
+@RangeIndex(properties = ["kind"])
 data class SessionData(
     /**
      * Unique session identifier. UUIDv7 is strongly recommended: it embeds its creation
      * timestamp in the leading bits, so lexicographic order is creation order, which is what
      * [com.embabel.chat.store.repository.SessionOrder.CREATED] paginates on. Any unique
      * string still paginates deterministically, just not chronologically.
+     *
+     * Don't encode meaning in the ID, such as a prefix for a kind of session: a prefixed ID is
+     * no longer time-ordered, and what it says can't change without changing the ID. Say what a
+     * session is with [kind], and which session it belongs to with `PART_OF`.
      */
     @NodeId val sessionId: String,
 
@@ -75,4 +80,21 @@ data class SessionData(
      * after the load. Treat it as opaque, and leave it null for a new session.
      */
     @NodeStamp val stamp: String? = null,
-)
+
+    /**
+     * What kind of session this is — `chat`, `thread`, or any name the app chooses. It is what an
+     * app tells its sessions apart by, so the session ID never has to: keep the ID an opaque UUIDv7.
+     * Set when the session is created and never changed.
+     *
+     * [Default] makes a session stored before this property existed hydrate as [DEFAULT_KIND], and
+     * a filter for [DEFAULT_KIND] matches it too. To write the value onto such sessions, run
+     * [com.embabel.chat.store.repository.ChatSessionRepository.backfillSessionKinds].
+     */
+    @Default
+    val kind: String = DEFAULT_KIND,
+) {
+    companion object {
+        /** The kind of a session created without one, and of every session stored before kinds existed. */
+        const val DEFAULT_KIND = "chat"
+    }
+}

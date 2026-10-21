@@ -133,7 +133,8 @@ open class ChatStoreAutoConfiguration {
         embeddingServices.getIfUnique() ?: ai.withDefaultEmbeddingService()
 
     /**
-     * Declares the chat-store uniqueness constraints — one per node-identity property.
+     * Declares the chat-store uniqueness constraints — one per node-identity property — and the
+     * range indexes on the session properties listings filter and order by.
      * Drivine's [org.drivine.schema.SchemaManager] (registered by the Drivine starter)
      * ensures every [SchemaCatalog] bean idempotently on startup, so this needs no
      * runner of its own. Enforcement is governed by `drivine.schema.enabled` (default true).
@@ -152,6 +153,7 @@ open class ChatStoreAutoConfiguration {
         UniquenessConstraintSpec(label = "StoredAsset", property = "storedAssetId"),
         UniquenessConstraintSpec(label = "DataAttachment", property = "dataAttachmentId"),
         RangeIndexSpec(label = "ChatSession", property = "lastActivityAt"),
+        RangeIndexSpec(label = "ChatSession", property = "kind"),
     ).named(CONSTRAINT_SCHEMA_OWNER)
 
     /**

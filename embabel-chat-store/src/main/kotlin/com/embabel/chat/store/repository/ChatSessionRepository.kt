@@ -18,6 +18,7 @@ package com.embabel.chat.store.repository
 import com.embabel.chat.store.model.AttachmentData
 import com.embabel.chat.store.model.AssetData
 import com.embabel.chat.store.model.MessageData
+import com.embabel.chat.store.model.SessionData
 import com.embabel.chat.store.model.SessionSummary
 import com.embabel.chat.store.model.SimpleStoredMessage
 import com.embabel.chat.store.model.StoredSession
@@ -83,6 +84,24 @@ interface ChatSessionRepository {
      * @return the created session
      */
     fun createSession(sessionId: String, owner: StoredUser, title: String? = null): StoredSession
+
+    /**
+     * Create a new session owned by the specified user, saying what it is: its kind, the session it
+     * is part of, and who it is held with.
+     *
+     * The default delegates to [createSession] for [SessionWrite.DEFAULT] and rejects anything else
+     * unless the implementation supports it.
+     *
+     * @throws IllegalArgumentException when [SessionWrite.partOf] names a session that does not
+     * exist, is itself part of another, is owned by someone else, or is this session; or when
+     * anything but [SessionWrite.DEFAULT] is given to an implementation that does not support it
+     */
+    fun createSession(sessionId: String, owner: StoredUser, title: String?, session: SessionWrite): StoredSession {
+        require(session == SessionWrite.DEFAULT) {
+            "This chat session repository does not support session kinds, PART_OF or WITH"
+        }
+        return createSession(sessionId, owner, title)
+    }
 
     /**
      * Create a new session with an initial message.
@@ -170,6 +189,83 @@ interface ChatSessionRepository {
     }
 
     /**
+     * Create a new session with an initial message, saying what the session is: see
+     * [createSession] taking a [SessionWrite].
+     *
+     * The default delegates to [createSessionWithMessage] taking a [MessageWrite] alone for
+     * [SessionWrite.DEFAULT] and rejects anything else unless the implementation supports it.
+     *
+     * @throws IllegalArgumentException as [createSession] taking a [SessionWrite] does, and as
+     * [createSessionWithMessage] taking a [MessageWrite] does
+     */
+    fun createSessionWithMessage(
+        sessionId: String,
+        owner: StoredUser,
+        title: String?,
+        write: MessageWrite,
+        session: SessionWrite,
+    ): StoredSession {
+        require(session == SessionWrite.DEFAULT) {
+            "This chat session repository does not support session kinds, PART_OF or WITH"
+        }
+        return createSessionWithMessage(sessionId, owner, title, write)
+    }
+
+    /**
+     * Find the session that is part of [partOf] and held with the user [withUserId] — an agent's
+     * private conversation inside a thread, say.
+     *
+     * No database can make that pair unique, so two sessions can match when two callers created one
+     * at once. The earliest (lowest `sessionId`) is always the one returned, so every caller settles
+     * on the same session.
+     *
+     * The default returns empty: an implementation that does not support `PART_OF` has no such
+     * sessions.
+     */
+    fun findPart(partOf: String, withUserId: String): Optional<StoredSession> = Optional.empty()
+
+    /**
+     * List the sessions that are part of a session, newest-created first, as summaries: the agents'
+     * private conversations inside a thread, say, each with who it is held with. Owner listings
+     * leave these out, so this is how they are reached from the session they belong to.
+     *
+     * The default returns none: an implementation that does not support `PART_OF` has no parts.
+     *
+     * @param sessionId the ID of the session they are part of
+     * @return its parts; empty when it has none or does not exist
+     */
+    fun listParts(sessionId: String): List<SessionSummary> = emptyList()
+
+    /**
+     * Find the session that is part of [partOf] and held with [heldWith], creating it when there is
+     * none. A created session gets a fresh UUIDv7 ID, is owned by the owner of [partOf], and is of
+     * [kind]. When two sessions match, the earliest is returned, as [findPart] does.
+     *
+     * @throws IllegalArgumentException when [partOf] does not exist or is itself part of another
+     * @throws UnsupportedOperationException from an implementation that does not support `PART_OF`
+     */
+    fun findOrCreatePart(
+        partOf: String,
+        heldWith: StoredUser,
+        kind: String = SessionData.DEFAULT_KIND,
+        title: String? = null,
+    ): StoredSession = throw UnsupportedOperationException(
+        "This chat session repository does not support sessions that are part of another"
+    )
+
+    /**
+     * Write [SessionData.DEFAULT_KIND] onto every session stored before kinds existed, so the graph
+     * holds what such a session already reads as. Safe to run again: a second run finds nothing to
+     * write. Listings filtered by kind treat a missing kind as the default either way, so running
+     * this is not needed for them to be right.
+     *
+     * The default does nothing, for an implementation with nothing stored without a kind.
+     *
+     * @return how many sessions were written
+     */
+    fun backfillSessionKinds(): Int = 0
+
+    /**
      * Find a session by its ID.
      *
      * @param sessionId the session ID
@@ -178,16 +274,27 @@ interface ChatSessionRepository {
     fun findBySessionId(sessionId: String): Optional<StoredSession>
 
     /**
-     * List all sessions owned by a user.
+     * List the top-level sessions owned by a user: those that are not part of another. To list
+     * those too, or only one kind, pass a [SessionFilter].
      *
      * @param userId the owner's user ID
      * @param order the sort order; defaults to newest-created first
-     * @return list of sessions owned by the user
+     * @return the top-level sessions owned by the user
      */
     fun listSessionsForUser(
         userId: String,
         order: SessionOrder = SessionOrder.CREATED,
     ): List<StoredSession>
+
+    /**
+     * List the sessions owned by a user that pass [filter].
+     *
+     * The default filters [listSessionsForUser] in memory, which suits an implementation whose
+     * listing returns every session; a database-backed implementation should push the filter into
+     * the query, as [ChatSessionRepositoryImpl] does.
+     */
+    fun listSessionsForUser(userId: String, order: SessionOrder, filter: SessionFilter): List<StoredSession> =
+        listSessionsForUser(userId, order).filter { filter.matches(it.session, it.partOf?.sessionId) }
 
     /**
      * List one page of sessions in [SessionPageRequest.order], using an opaque keyset cursor.
@@ -200,18 +307,20 @@ interface ChatSessionRepository {
      * There is no snapshot isolation across requests: under [SessionOrder.LAST_ACTIVITY],
      * concurrent activity may move a session ahead of an already-issued cursor, so it can be seen
      * twice or missed. [SessionOrder.CREATED] keys on an immutable value and so is stable.
+     *
+     * Returns the sessions that pass [SessionPageRequest.filter]: by default, the top-level ones.
      */
     fun listSessionsForUser(userId: String, page: SessionPageRequest): SessionPage<StoredSession> =
-        SessionPaging.inMemory(listSessionsForUser(userId, page.order), page) { it.session }
+        SessionPaging.inMemory(listSessionsForUser(userId, page.order, page.filter), page) { it.session }
 
     /**
-     * List a user's sessions as lightweight summaries — owner plus a message count
+     * List a user's top-level sessions as lightweight summaries — owner plus a message count
      * computed in the query, without loading the messages. Suited to session-list
      * UIs that show a "N messages" badge but not the conversation bodies.
      *
      * @param userId the owner's user ID
      * @param order the sort order; defaults to newest-created first
-     * @return one [SessionSummary] per owned session
+     * @return one [SessionSummary] per owned top-level session
      */
     fun listSessionSummariesForUser(
         userId: String,
@@ -219,18 +328,35 @@ interface ChatSessionRepository {
     ): List<SessionSummary>
 
     /**
-     * Lightweight equivalent of [listSessionsForUser] with identical ordering and cursor semantics.
+     * Lightweight equivalent of [listSessionsForUser] taking a [SessionFilter], with the same default.
      */
-    fun listSessionSummariesForUser(userId: String, page: SessionPageRequest): SessionPage<SessionSummary> =
-        SessionPaging.inMemory(listSessionSummariesForUser(userId, page.order), page) { it.session }
+    fun listSessionSummariesForUser(userId: String, order: SessionOrder, filter: SessionFilter): List<SessionSummary> =
+        listSessionSummariesForUser(userId, order).filter { filter.matches(it.session, it.partOf?.sessionId) }
 
     /**
-     * Count the sessions owned by a user, without loading them.
+     * Lightweight equivalent of [listSessionsForUser] with identical ordering, filter and cursor semantics.
+     */
+    fun listSessionSummariesForUser(userId: String, page: SessionPageRequest): SessionPage<SessionSummary> =
+        SessionPaging.inMemory(listSessionSummariesForUser(userId, page.order, page.filter), page) { it.session }
+
+    /**
+     * Count the top-level sessions owned by a user, without loading them: as many as
+     * [listSessionsForUser] returns.
      *
      * @param userId the owner's user ID
-     * @return the number of sessions owned by the user
+     * @return the number of top-level sessions owned by the user
      */
     fun countSessionsForUser(userId: String): Long
+
+    /**
+     * Count the sessions owned by a user that pass [filter]: as many as [listSessionsForUser]
+     * taking the same filter returns.
+     *
+     * The default counts the in-memory listing; a database-backed implementation should count in
+     * the query.
+     */
+    fun countSessionsForUser(userId: String, filter: SessionFilter): Long =
+        listSessionSummariesForUser(userId, SessionOrder.CREATED, filter).size.toLong()
 
     /**
      * Update the title of a session. Only the title is written: a message added to the session,
@@ -243,7 +369,8 @@ interface ChatSessionRepository {
     fun updateSessionTitle(sessionId: String, title: String)
 
     /**
-     * Delete a session and all its messages.
+     * Delete a session and all its messages, and the sessions that are part of it with theirs.
+     * The users they are owned by, held with, or written by are kept.
      *
      * @param sessionId the session ID
      */

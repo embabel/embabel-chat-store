@@ -35,6 +35,8 @@ import org.drivine.annotation.SortedBy
  * ```
  * (session:ChatSession)-[:OWNED_BY]->(user:User)
  * (session:ChatSession)-[:HAS_MESSAGE]->(msg:StoredMessage)
+ * (session:ChatSession)-[:PART_OF]->(thread:ChatSession)   // optional
+ * (session:ChatSession)-[:WITH]->(agent:User)              // optional
  * ```
  */
 @GraphView
@@ -56,7 +58,21 @@ data class StoredSession(
      */
     @GraphRelationship(type = "HAS_MESSAGE", direction = Direction.OUTGOING)
     @SortedBy("message.messageId")
-    val messages: List<SimpleStoredMessage> = emptyList()
+    val messages: List<SimpleStoredMessage> = emptyList(),
+
+    /**
+     * The session this one is part of — an agent's private conversation inside a thread, say.
+     * Null for a top-level session. Set when the session is created and never changed.
+     */
+    @GraphRelationship(type = "PART_OF", direction = Direction.OUTGOING)
+    val partOf: SessionRef? = null,
+
+    /**
+     * The one user this session is held with, such as the agent a side conversation is with.
+     * Set when the session is created and never changed.
+     */
+    @GraphRelationship(type = "WITH", direction = Direction.OUTGOING)
+    val heldWith: StoredUser? = null,
 ) {
     /**
      * Returns a copy of this session with an additional message.
@@ -66,9 +82,11 @@ data class StoredSession(
 }
 
 /**
- * Lightweight session reference for write operations.
+ * Lightweight session reference.
  * Contains only the session ID — used as the root of [NewMessageInSession] to create
- * the HAS_MESSAGE relationship without loading or modifying session properties.
+ * the HAS_MESSAGE relationship without loading or modifying session properties, and as the
+ * target of a session's `PART_OF` ([StoredSession.partOf], [SessionSummary.partOf]), so saving
+ * a part writes the relationship and leaves the session it is part of as it was.
  *
  * @see NewMessageInSession
  */

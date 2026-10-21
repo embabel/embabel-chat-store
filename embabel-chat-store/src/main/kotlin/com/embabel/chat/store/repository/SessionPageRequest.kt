@@ -19,12 +19,19 @@ package com.embabel.chat.store.repository
  * Request for one cursor-based page of sessions.
  *
  * [order] must stay the same across every page of a walk: a [cursor] is only valid for the
- * ordering that issued it, and pairing it with a different one is rejected.
+ * ordering that issued it, and pairing it with a different one is rejected. Keep [filter] the same
+ * across the walk too: a cursor from another filter is accepted, but its pages are of that filter's
+ * sessions.
+ *
+ * A custom [ChatSessionRepository] written before [filter] existed, which pages in a query of its
+ * own, does not know of it: it returns every session it did before, and should apply [filter] when
+ * it is next changed.
  */
 data class SessionPageRequest(
     val pageSize: Int = DEFAULT_PAGE_SIZE,
     val cursor: String? = null,
     val order: SessionOrder = SessionOrder.CREATED,
+    val filter: SessionFilter = SessionFilter.TOP_LEVEL,
 ) {
     init {
         require(pageSize in 1..MAX_PAGE_SIZE) {

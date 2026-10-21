@@ -156,7 +156,7 @@ reads and writes them through Drivine's `StatelessGraphObjectManager` and the qu
 generates at build time, so it holds no Cypher or SQL of its own. Drivine writes the statement for the
 configured database: Cypher for Neo4j, FalkorDB and Memgraph, SQL/PGQ for Oracle.
 
-The schema is declared, not written: the constraints, the `lastActivityAt` range index and the message
+The schema is declared, not written: the constraints, the `lastActivityAt` and `kind` range indexes and the message
 vector index are Drivine `SchemaCatalog`s, and Drivine's schema manager creates each in the database's
 own form at startup. A load or a save is one statement and one round trip however many relationships it
 carries.
@@ -327,6 +327,77 @@ attachment), and refuses anything more with `IllegalArgumentException`.
 - `SessionSummary.startedBy` is the author of the earliest message that has one, read in the same
   query as the rest of the summary. A message with no author, such as a system greeting, is passed
   over; a session in which nobody has written yet has none.
+
+## Kinds of Session, and Sessions Within Sessions
+
+A session's ID is an opaque UUIDv7 and says nothing about the session. What a session is lives in
+the graph: its `kind`, the session it is `PART_OF`, and the user it is held `WITH`.
+
+```mermaid
+flowchart LR
+    owner(["User<br/>(the person)"])
+    agent(["User<br/>(an agent)"])
+    thread["ChatSession<br/>kind: thread"]
+    side["ChatSession<br/>kind: chat"]
+    msg["StoredMessage"]
+
+    thread -- OWNED_BY --> owner
+    side -- OWNED_BY --> owner
+    side -- PART_OF --> thread
+    side -- WITH --> agent
+    thread -- HAS_MESSAGE --> msg
+    msg -- AUTHORED_BY --> agent
+    msg -- SENT_TO --> agent
+```
+
+Don't put meaning in a session ID, such as a `th_` prefix for a thread: a prefixed ID is no longer
+time-ordered, so it breaks `SessionOrder.CREATED`, and what it says can't change without changing the
+ID. All three of `kind`, `PART_OF` and `WITH` are set when a session is created and never change:
+
+```kotlin
+repository.createSession(threadId, owner, "Planning", SessionWrite(kind = "thread"))
+```
+
+- **`kind`** is any string the app chooses, `chat` (`SessionData.DEFAULT_KIND`) unless given.
+- **`PART_OF`** links a session to the one it belongs to, such as an agent's private conversation
+  inside a thread. The session it is part of must exist, must itself be top-level, and must have the
+  same owner.
+- **`WITH`** links a session to the one user it is held with, such as that agent.
+
+An agent's conversation inside a thread is found again by the thread and the agent, and made the
+first time:
+
+```kotlin
+val side = repository.findOrCreatePart(partOf = threadId, heldWith = agent)   // owned by the thread's owner
+repository.findPart(threadId, agent.id)                                   // Optional, never creates
+repository.listParts(threadId)                                            // every part, as summaries
+```
+
+No database can make the (thread, agent) pair unique, so two callers at once can each make one.
+Every lookup returns the earliest, so they settle on the same session.
+
+**Listings.** `listSessionsForUser`, `listSessionSummariesForUser` and `countSessionsForUser` return
+top-level sessions only, so side conversations don't crowd the owner's list, and a count always matches
+its list. Pass a `SessionFilter` to choose a kind or to include the sessions that are part of another,
+as a parameter or as `SessionPageRequest.filter`:
+
+```kotlin
+repository.listSessionSummariesForUser(userId, SessionOrder.LAST_ACTIVITY, SessionFilter(kind = "thread"))
+repository.countSessionsForUser(userId, SessionFilter(includeParts = true))
+```
+
+**Deleting** a session deletes the sessions that are part of it, with their messages. The users they
+are owned by, held with or written by are kept. Since a session is part of a top-level session only,
+the delete reaches one level; if something written below the repository ever nested a session deeper,
+the delete is refused before anything is written rather than leaving that session behind.
+
+**Upgrading.** A session stored before `kind` existed reads as `chat`, and a filter for `chat` returns
+it, so nothing needs to run first. `ChatSessionRepository.backfillSessionKinds()` writes the value onto
+such sessions a page at a time; it is safe to run again, and returns how many it wrote.
+
+A custom `ChatSessionRepository` keeps compiling: the new methods have defaults. It takes only
+`SessionWrite.DEFAULT`, finds no parts, and refuses `findOrCreatePart` with
+`UnsupportedOperationException`.
 
 ## Sorting and Pagination
 

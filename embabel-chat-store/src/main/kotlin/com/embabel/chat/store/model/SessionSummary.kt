@@ -41,6 +41,8 @@ import org.drivine.annotation.Root
  * (session:ChatSession)-[:OWNED_BY]->(user:User)
  * (session:ChatSession)-[:HAS_MESSAGE]->(msg:StoredMessage)   // counted, not loaded
  * (session)-[:HAS_MESSAGE]->(first:StoredMessage)-[:AUTHORED_BY]->(starter:User)   // the earliest authored message's author
+ * (session)-[:PART_OF]->(thread:ChatSession)   // optional
+ * (session)-[:WITH]->(agent:User)              // optional
  * ```
  */
 @GraphView
@@ -66,4 +68,12 @@ data class SessionSummary(
         Hop("AUTHORED_BY", Direction.OUTGOING, label = "User"),
     ])
     val startedBy: StoredUser? = null,
+
+    /** The session this one is part of; null for a top-level session. See [StoredSession.partOf]. */
+    @GraphRelationship(type = "PART_OF", direction = Direction.OUTGOING)
+    val partOf: SessionRef? = null,
+
+    /** The one user this session is held with. See [StoredSession.heldWith]. */
+    @GraphRelationship(type = "WITH", direction = Direction.OUTGOING)
+    val heldWith: StoredUser? = null,
 )

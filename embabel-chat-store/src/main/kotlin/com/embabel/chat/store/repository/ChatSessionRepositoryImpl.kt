@@ -24,8 +24,10 @@ import com.embabel.chat.store.model.MessageData
 import com.embabel.chat.store.model.MessageInSession
 import com.embabel.chat.store.model.NewMessageInSession
 import com.embabel.chat.store.model.SessionData
+import com.embabel.chat.store.model.SessionDataProperties
 import com.embabel.chat.store.model.SessionParticipants
 import com.embabel.chat.store.model.SessionRef
+import com.embabel.chat.store.model.SessionRefProperties
 import com.embabel.chat.store.model.SessionSummary
 import com.embabel.chat.store.model.SessionSummaryQueryDsl
 import com.embabel.chat.store.model.SimpleStoredMessage
@@ -33,6 +35,7 @@ import com.embabel.chat.store.model.StoredSession
 import com.embabel.chat.store.model.StoredSessionQueryDsl
 import com.embabel.chat.MessageRole
 import com.embabel.chat.store.model.StoredUser
+import com.embabel.chat.store.model.StoredUserProperties
 import com.embabel.chat.store.model.UserRef
 import com.embabel.chat.store.model.deleteAll
 import com.embabel.chat.store.model.loadAll
@@ -40,6 +43,7 @@ import com.embabel.chat.store.model.message
 import com.embabel.chat.store.model.owner
 import com.embabel.chat.store.model.patch
 import com.embabel.chat.store.model.session
+import com.embabel.chat.store.util.UUIDv7
 import org.drivine.manager.CascadeType
 import org.drivine.manager.PersistenceManager
 import org.drivine.manager.StatelessGraphObjectManager
@@ -50,7 +54,9 @@ import org.drivine.schema.EnsureResult
 import org.drivine.schema.VectorIndexSpec
 import org.drivine.query.dsl.OrderBuilder
 import org.drivine.query.dsl.OrderSpec
+import org.drivine.query.dsl.WhereBuilder
 import org.drivine.query.dsl.anyOf
+import org.drivine.query.dsl.none
 import org.drivine.query.dsl.query
 import org.slf4j.LoggerFactory
 import org.springframework.context.ApplicationEventPublisher
@@ -63,6 +69,33 @@ import java.util.Optional
 context(builder: OrderBuilder<*>)
 private fun registerOrder(order: OrderSpec) {
     builder(order)
+}
+
+/**
+ * The conditions every owner listing and count shares, so a count always matches its list.
+ *
+ * A filter for the default kind also takes a session with no kind stored, which is what such a
+ * session reads as, whether or not [ChatSessionRepository.backfillSessionKinds] has run.
+ */
+context(builder: WhereBuilder<T>)
+private fun <T : Any> ownedAndFiltered(
+    userId: String,
+    filter: SessionFilter,
+    owner: StoredUserProperties,
+    session: SessionDataProperties,
+    partOf: SessionRefProperties,
+) {
+    owner.id eq userId
+    if (!filter.includeParts) {
+        partOf.none { }
+    }
+    filter.kind?.let { kind ->
+        if (kind == SessionData.DEFAULT_KIND) {
+            anyOf { session.kind eq kind; session.kind.isNull() }
+        } else {
+            session.kind eq kind
+        }
+    }
 }
 
 /**
@@ -173,24 +206,18 @@ open class ChatSessionRepositoryImpl(
     ): Int = MessageReembedRun(graphObjectManager, modelName, embed, REEMBED_PAGE_SIZE).execute()
 
     @Transactional
-    override fun createSession(sessionId: String, owner: StoredUser, title: String?): StoredSession {
-        logger.debug("Creating session {} for owner {}", sessionId, owner.id)
+    override fun createSession(sessionId: String, owner: StoredUser, title: String?): StoredSession =
+        createSession(sessionId, owner, title, SessionWrite.DEFAULT)
 
-        val now = clock.instant()
-        val session = StoredSession(
-            session = SessionData(
-                sessionId = sessionId,
-                title = title,
-                createdAt = now,
-                lastActivityAt = now,
-            ),
-            owner = owner,
-            messages = emptyList()
-        )
-
-        return graphObjectManager.save(session).also {
-            eventPublisher?.publishEvent(SessionCreatedEvent(it))
-        }
+    @Transactional
+    override fun createSession(
+        sessionId: String,
+        owner: StoredUser,
+        title: String?,
+        session: SessionWrite,
+    ): StoredSession {
+        logger.debug("Creating {} session {} for owner {}", session.kind, sessionId, owner.id)
+        return newSession(sessionId, owner, title, emptyList(), session)
     }
 
     @Transactional
@@ -224,8 +251,17 @@ open class ChatSessionRepositoryImpl(
         owner: StoredUser,
         title: String?,
         write: MessageWrite,
+    ): StoredSession = createSessionWithMessage(sessionId, owner, title, write, SessionWrite.DEFAULT)
+
+    @Transactional
+    override fun createSessionWithMessage(
+        sessionId: String,
+        owner: StoredUser,
+        title: String?,
+        write: MessageWrite,
+        session: SessionWrite,
     ): StoredSession {
-        logger.debug("Creating session {} with initial message for owner {}", sessionId, owner.id)
+        logger.debug("Creating {} session {} with initial message for owner {}", session.kind, sessionId, owner.id)
 
         val message = SimpleStoredMessage(
             message = write.messageData,
@@ -235,7 +271,84 @@ open class ChatSessionRepositoryImpl(
             assets = write.assets,
             dataAttachments = write.dataAttachments,
         )
+        return newSession(sessionId, owner, title, listOf(message), session)
+    }
 
+    @Transactional(readOnly = true)
+    override fun findPart(partOf: String, withUserId: String): Optional<StoredSession> {
+        val earliestFirst = StoredSessionQueryDsl.INSTANCE.session.sessionId.ascending()
+        return Optional.ofNullable(
+            graphObjectManager.loadAll<StoredSession> {
+                where {
+                    query.partOf.sessionId eq partOf
+                    query.heldWith.id eq withUserId
+                }
+                orderBy { registerOrder(earliestFirst) }
+                limit(1)
+            }.firstOrNull()
+        )
+    }
+
+    @Transactional(readOnly = true)
+    override fun listParts(sessionId: String): List<SessionSummary> {
+        val orders = sessionSummaryOrders(SessionOrder.CREATED)
+        return graphObjectManager.loadAll<SessionSummary> {
+            where { query.partOf.sessionId eq sessionId }
+            orderBy { orders.forEach { registerOrder(it) } }
+        }
+    }
+
+    /**
+     * Looks again after a create, so a caller that raced another and lost gets the earliest session,
+     * the one every later lookup returns, rather than writing into its own. The race is narrowed, not
+     * closed: a create the other caller has not yet committed is not seen.
+     */
+    @Transactional
+    override fun findOrCreatePart(partOf: String, heldWith: StoredUser, kind: String, title: String?): StoredSession =
+        findPart(partOf, heldWith.id).orElseGet {
+            val parent = graphObjectManager.load<SessionSummary>(partOf)
+                ?: throw IllegalArgumentException("Session not found: $partOf")
+            val created = createSession(UUIDv7.generateString(), parent.owner, title, SessionWrite(kind, partOf, heldWith))
+            findPart(partOf, heldWith.id).orElse(created)
+        }
+
+    /**
+     * Not `@Transactional`: each page is patched in a transaction of its own, so a store of any
+     * size is written without one transaction holding every session, and a run that stops resumes
+     * where it left off.
+     */
+    override fun backfillSessionKinds(): Int {
+        var written = 0
+        var previous = emptySet<String>()
+        while (true) {
+            // A session with no kind still hydrates as the default kind, which the patch then writes.
+            val page = graphObjectManager.loadAll<SessionData> {
+                where { query.kind.isNull() }
+                limit(BACKFILL_PAGE_SIZE)
+            }
+            if (page.isEmpty()) return written
+            check(page.none { it.sessionId in previous }) {
+                "Sessions were written a kind and still read as having none; stopping rather than looping"
+            }
+            graphObjectManager.patchAll(page, only = setOf(SessionData::kind))
+            written += page.size
+            previous = page.mapTo(HashSet()) { it.sessionId }
+            logger.info("Wrote the default kind onto {} sessions stored before kinds existed", written)
+        }
+    }
+
+    /**
+     * Saves a new session. A session that is part of another is checked first: the other must
+     * exist, must be top-level, and must be owned by [owner].
+     */
+    private fun newSession(
+        sessionId: String,
+        owner: StoredUser,
+        title: String?,
+        messages: List<SimpleStoredMessage>,
+        write: SessionWrite,
+    ): StoredSession {
+        write.partOf?.let { requirePartOf(sessionId, owner, it) }
         val now = clock.instant()
         val session = StoredSession(
             session = SessionData(
@@ -243,13 +356,34 @@ open class ChatSessionRepositoryImpl(
                 title = title,
                 createdAt = now,
                 lastActivityAt = now,
+                kind = write.kind,
             ),
             owner = owner,
-            messages = listOf(message)
+            messages = messages,
+            partOf = write.partOf?.let(::SessionRef),
+            heldWith = write.heldWith,
         )
 
         return graphObjectManager.save(session).also {
             eventPublisher?.publishEvent(SessionCreatedEvent(it))
+        }
+    }
+
+    /**
+     * One level, so a listing of top-level sessions is a session list, and a delete reaches every
+     * part: [DeletableSession] cascades one level deep and refuses a deeper one.
+     */
+    private fun requirePartOf(sessionId: String, owner: StoredUser, partOf: String) {
+        require(partOf != sessionId) { "Session $sessionId cannot be part of itself" }
+        val parent = graphObjectManager.load<SessionSummary>(partOf)
+            ?: throw IllegalArgumentException("Session not found: $partOf")
+        parent.partOf?.let { grandparent ->
+            throw IllegalArgumentException(
+                "Session $partOf is itself part of ${grandparent.sessionId}: a session can be part of a top-level session only"
+            )
+        }
+        require(parent.owner.id == owner.id) {
+            "Session $partOf is owned by ${parent.owner.id}: a session part of it must be owned by the same user, not ${owner.id}"
         }
     }
 
@@ -261,11 +395,15 @@ open class ChatSessionRepositoryImpl(
     }
 
     @Transactional(readOnly = true)
-    override fun listSessionsForUser(userId: String, order: SessionOrder): List<StoredSession> {
+    override fun listSessionsForUser(userId: String, order: SessionOrder): List<StoredSession> =
+        listSessionsForUser(userId, order, SessionFilter.TOP_LEVEL)
+
+    @Transactional(readOnly = true)
+    override fun listSessionsForUser(userId: String, order: SessionOrder, filter: SessionFilter): List<StoredSession> {
         val orders = storedSessionOrders(order)
         return graphObjectManager.loadAll<StoredSession> {
             where {
-                owner.id eq userId
+                ownedAndFiltered(userId, filter, owner, session, query.partOf)
             }
             orderBy {
                 orders.forEach { registerOrder(it) }
@@ -279,7 +417,7 @@ open class ChatSessionRepositoryImpl(
         val cursor = page.cursor?.let { SessionCursorCodec.decode(it, page.order) }
         return loadSessionPage(page, loader = {
             graphObjectManager.loadAll<StoredSession> {
-                where { owner.id eq userId }
+                where { ownedAndFiltered(userId, page.filter, owner, session, query.partOf) }
                 orderBy { orders.forEach { registerOrder(it) } }
                 when (cursor) {
                     null -> Unit
@@ -298,13 +436,21 @@ open class ChatSessionRepositoryImpl(
     }
 
     @Transactional(readOnly = true)
-    override fun listSessionSummariesForUser(userId: String, order: SessionOrder): List<SessionSummary> {
+    override fun listSessionSummariesForUser(userId: String, order: SessionOrder): List<SessionSummary> =
+        listSessionSummariesForUser(userId, order, SessionFilter.TOP_LEVEL)
+
+    @Transactional(readOnly = true)
+    override fun listSessionSummariesForUser(
+        userId: String,
+        order: SessionOrder,
+        filter: SessionFilter,
+    ): List<SessionSummary> {
         val orders = sessionSummaryOrders(order)
         // SessionSummary folds the message count into the query (via @Count), so this
         // returns one flat row per session — no message bodies cross the wire.
         return graphObjectManager.loadAll<SessionSummary> {
             where {
-                owner.id eq userId
+                ownedAndFiltered(userId, filter, owner, session, query.partOf)
             }
             orderBy {
                 orders.forEach { registerOrder(it) }
@@ -321,7 +467,7 @@ open class ChatSessionRepositoryImpl(
         val cursor = page.cursor?.let { SessionCursorCodec.decode(it, page.order) }
         return loadSessionPage(page, loader = {
             graphObjectManager.loadAll<SessionSummary> {
-                where { owner.id eq userId }
+                where { ownedAndFiltered(userId, page.filter, owner, session, query.partOf) }
                 orderBy { orders.forEach { registerOrder(it) } }
                 when (cursor) {
                     null -> Unit
@@ -361,10 +507,14 @@ open class ChatSessionRepositoryImpl(
     }
 
     @Transactional(readOnly = true)
-    override fun countSessionsForUser(userId: String): Long {
+    override fun countSessionsForUser(userId: String): Long =
+        countSessionsForUser(userId, SessionFilter.TOP_LEVEL)
+
+    @Transactional(readOnly = true)
+    override fun countSessionsForUser(userId: String, filter: SessionFilter): Long {
         return graphObjectManager.count(StoredSession::class.java, StoredSessionQueryDsl.INSTANCE) {
             where {
-                owner.id eq userId
+                ownedAndFiltered(userId, filter, owner, session, query.partOf)
             }
         }
     }
@@ -382,10 +532,11 @@ open class ChatSessionRepositoryImpl(
 
     @Transactional
     override fun deleteSession(sessionId: String) {
-        // Cascade through DeletableSession so the session and all of its messages
-        // are hard-deleted. The view declares only HAS_MESSAGE, so the cascade
-        // cannot reach the owner or message authors/recipients — DETACH DELETE of
-        // each :StoredMessage drops those edges while leaving every :User intact.
+        // Cascade through DeletableSession so the session, its messages, and the sessions
+        // that are part of it with theirs, are hard-deleted. The view declares only
+        // HAS_MESSAGE and PART_OF, so the cascade cannot reach the owner, the WITH user or
+        // message authors/recipients — DETACH DELETE drops those edges while leaving every
+        // :User intact.
         graphObjectManager.delete<DeletableSession>(sessionId, CascadeType.DELETE_ALL)
     }
 
@@ -546,6 +697,9 @@ open class ChatSessionRepositoryImpl(
          * what DrivineStore uses for chunks; nothing here is tuned to a measurement.
          */
         const val REEMBED_PAGE_SIZE = 200
+
+        /** Sessions per backfill page: each is one load and one patch, in a transaction of its own. */
+        const val BACKFILL_PAGE_SIZE = 500
     }
 
 }
