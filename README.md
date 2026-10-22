@@ -25,7 +25,7 @@ development and tests.
 
 [Guide](https://github.com/embabel/guide) is a working reference: an Embabel agent that answers
 questions about Embabel from its documentation, and keeps its conversations in this store on any of
-the four databases.
+Neo4j, FalkorDB, Memgraph, Oracle or Postgres.
 [Embabel Hub](https://hub.embabel.com) is its official front end.
 
 <p align="center">
@@ -159,7 +159,8 @@ databases. The message vector index is an HNSW index of pgvector.
 
    Drivine makes the graph's tables the first time a manager speaks to the graph, and the pgvector
    extension where the server has it and the user may make it. Without pgvector everything works
-   except the message vector index and vector search.
+   except the message vector index and vector search, and the index cannot be made, so turn it off
+   with `embabel.chat.store.vector-index.enabled: false` or startup fails ensuring it.
 
 3. Define the repository as above.
 
