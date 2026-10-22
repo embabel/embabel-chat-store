@@ -100,10 +100,16 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- Oracle JDBC driver, for the tests that run with ORACLE_TESTS=true. Drivine does not bring it. -->
+        <!-- Oracle and Postgres JDBC drivers, for the tests on those stores. Drivine does not bring them. -->
         <dependency>
             <groupId>com.oracle.database.jdbc</groupId>
             <artifactId>ojdbc11</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
             <scope>test</scope>
         </dependency>
 

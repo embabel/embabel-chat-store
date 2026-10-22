@@ -7,7 +7,7 @@
 <br clear="left"/>
 
 Conversation persistence for the Embabel Agent framework: chat sessions, their messages, who sent
-each one to whom, attachments, structured data and assets, keyset paging, and a vector per message. It runs on four
+each one to whom, attachments, structured data and assets, keyset paging, and a vector per message. It runs on five
 databases through [Drivine4j](https://github.com/liberation-data/drivine4j), and in memory for
 development and tests.
 
@@ -19,6 +19,7 @@ development and tests.
 | **FalkorDB** | Fastest on most workloads in [graph-bench](https://github.com/liberation-data/graph-bench). |
 | **Memgraph** | Use the `memgraph/memgraph-mage` image, which has the vector search module. |
 | **Oracle** ![New](https://img.shields.io/badge/NEW-ff3e00?style=flat-square) | Oracle Database 23ai or later. No Cypher: Drivine reads with SQL/PGQ and writes rows. Needs the JDBC driver. See [Oracle](#oracle). |
+| **Postgres** ![New](https://img.shields.io/badge/NEW-ff3e00?style=flat-square) | Postgres 14 or later. No Cypher: Drivine reads and writes with plain SQL, and searches vectors with pgvector. Needs the JDBC driver. See [Postgres](#postgres). |
 
 ## See it running
 
@@ -51,7 +52,7 @@ Configure a Drivine datasource:
 database:
   datasources:
     neo:
-      type: NEO4J          # or FALKORDB, MEMGRAPH; for ORACLE see below
+      type: NEO4J          # or FALKORDB, MEMGRAPH; for ORACLE and POSTGRES see below
       host: localhost
       port: 7687
       user-name: neo4j
@@ -127,6 +128,41 @@ SQL/PGQ and writes rows, and the repository is the same class as on the other da
 
 3. Define the repository as above.
 
+### Postgres
+
+Postgres 14 or later. Postgres does not speak Cypher either: Drivine keeps the graph in tables of its
+own, reads and writes it with plain SQL, and the repository is the same class as on the other
+databases. The message vector index is an HNSW index of pgvector.
+
+1. Add the JDBC driver. Drivine does not bring it:
+
+   ```xml
+   <dependency>
+       <groupId>org.postgresql</groupId>
+       <artifactId>postgresql</artifactId>
+   </dependency>
+   ```
+
+2. Point the datasource at the database:
+
+   ```yaml
+   database:
+     datasources:
+       neo:
+         type: POSTGRES
+         host: localhost
+         port: 5432                  # the default
+         database-name: app          # the database to connect to
+         user-name: app
+         password: secret
+   ```
+
+   Drivine makes the graph's tables the first time a manager speaks to the graph, and the pgvector
+   extension where the server has it and the user may make it. Without pgvector everything works
+   except the message vector index and vector search.
+
+3. Define the repository as above.
+
 ## How it works
 
 ```
@@ -154,7 +190,7 @@ with its owner and messages, a message with its author, recipients, attachments,
 assets. `ChatSessionRepositoryImpl`
 reads and writes them through Drivine's `StatelessGraphObjectManager` and the query DSL Drivine
 generates at build time, so it holds no Cypher or SQL of its own. Drivine writes the statement for the
-configured database: Cypher for Neo4j, FalkorDB and Memgraph, SQL/PGQ for Oracle.
+configured database: Cypher for Neo4j, FalkorDB and Memgraph, SQL/PGQ for Oracle, plain SQL for Postgres.
 
 The schema is declared, not written: the constraints, the `lastActivityAt` and `kind` range indexes and the message
 vector index are Drivine `SchemaCatalog`s, and Drivine's schema manager creates each in the database's
@@ -718,21 +754,20 @@ Each of these can be overridden by defining your own bean of the same type.
 
 ## Testing
 
-Integration tests use Testcontainers, on Neo4j:
+Integration tests use Testcontainers, on Neo4j, Oracle Free and Postgres with pgvector:
 
 ```bash
 mvn test
 ```
 
-The Oracle tests are left out of a plain run, because the image is large and the database wants two
-gigabytes. They start Oracle Free in a container:
+The Oracle image is large and the database wants two gigabytes. To run one store's tests alone:
 
 ```bash
-ORACLE_TESTS=true mvn -pl embabel-chat-store test -Dtest=ChatSessionRepositoryOracleTest
+mvn -pl embabel-chat-store test -Dtest='*OracleTest'      # or '*PostgresTest'
 ```
 
 ## Dependencies
 
 - `embabel-agent-api` - Core conversation interfaces
-- `drivine` - graph persistence on Neo4j, FalkorDB, Memgraph and Oracle
+- `drivine` - graph persistence on Neo4j, FalkorDB, Memgraph, Oracle and Postgres
 - Spring Boot (optional, for auto-configuration)

@@ -17,21 +17,19 @@ package com.embabel.chat.store.repository
 
 import com.embabel.chat.store.TestApplication
 import org.drivine.manager.PersistenceManager
-import org.drivine.test.OracleCypherFixtures
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
+import org.drivine.test.SqlCypherFixtures
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.test.context.ActiveProfiles
 
 /**
  * [SessionKindsAndPartsTests] on Oracle, which does not speak Cypher: fixtures and checks are worked
- * out over its graph. Runs only with `ORACLE_TESTS=true`, as [ChatSessionRepositoryOracleTest] does.
+ * out over its graph.
  */
 @SpringBootTest(classes = [TestApplication::class])
 @ActiveProfiles("oracle")
-@EnabledIfEnvironmentVariable(named = "ORACLE_TESTS", matches = "true")
 class SessionKindsAndPartsOracleTest : SessionKindsAndPartsTests() {
     override val fixtures: PersistenceManager
-        get() = OracleCypherFixtures.over(persistenceManager)
+        get() = SqlCypherFixtures.over(persistenceManager)
 
-    override fun prepare() = OracleCypherFixtures.clear(persistenceManager)
+    override fun prepare() = SqlCypherFixtures.clear(persistenceManager)
 }

@@ -1,4 +1,4 @@
-# The same datasource, on Oracle: for the tests that run only with ORACLE_TESTS=true.
+# The same datasource, on Oracle.
 # @EnableDrivineTestConfig starts Oracle Free in a container and connects as its user to its service.
 database:
   datasources:
