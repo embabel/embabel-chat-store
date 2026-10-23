@@ -28,6 +28,7 @@ import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.annotation.NodeStamp
 import org.drivine.annotation.Root
+import org.drivine.annotation.VectorIndex
 import com.embabel.chat.store.util.UUIDv7
 import java.time.Instant
 
@@ -80,7 +81,12 @@ data class MessageData(
      * compare arrays by reference; this is acceptable here because no code
      * relies on structural equality between distinct [MessageData] instances
      * (the pending-buffer queue compares the same instance to itself).
+     *
+     * [VectorIndex] marks it as the vector Drivine writes and searches: on FalkorDB it is written as a vector,
+     * and `loadNearest` finds its index. The index itself is still declared by the configured
+     * `VectorIndexSpec`, whose settings win over the annotation's.
      */
+    @VectorIndex
     val embedding: FloatArray? = null,
 
     /**
