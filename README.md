@@ -92,6 +92,16 @@ conversation.addMessage(UserMessage("Hello!"))      // from=user, to=agent
 conversation.addMessage(AssistantMessage("Hi!"))    // from=agent, to=user
 ```
 
+`createForParticipants` creates the backing session when absent. An existing session is
+reused only when `user.id` matches its owner; its stored title is preserved.
+Passing another user for the same session ID
+throws `IllegalArgumentException`.
+
+The lookup and session creation are not atomic. Concurrent calls for the same new session
+ID can both call `createSession`, overwriting the title, `createdAt`, and `lastActivityAt`
+and publishing duplicate `SessionCreatedEvent`s. Avoid concurrently initializing the same
+session ID.
+
 The database is whichever one the datasource names. Nothing database-specific is passed in, so moving
 from one to another is a configuration change.
 
@@ -282,8 +292,9 @@ Messages have explicit sender and recipient:
 For multi-user or multi-agent scenarios, use `addMessageFromTo` for explicit routing:
 
 ```kotlin
-// Create conversation without default participants
-val conversation = factory.create(sessionId)
+// A multi-party conversation needs an explicit session owner.
+chatSessionRepository.createSession(sessionId, owner = alice, title = "Group chat")
+val conversation = factory.create(sessionId) as StoredConversation
 
 // Group chat with multiple users
 conversation.addMessageFromTo(UserMessage("Hi everyone!"), from = alice, to = bob)
