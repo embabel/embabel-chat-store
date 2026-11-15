@@ -26,6 +26,7 @@ version = "0.5.0-SNAPSHOT"
 val drivineVersion = (findProperty("drivineVersion") as String?) ?: "0.5.0"
 val embabelAgentVersion = (findProperty("embabelAgentVersion") as String?) ?: "1.5.0-SNAPSHOT"
 val embabelCommonVersion = (findProperty("embabelCommonVersion") as String?) ?: "2.0.0-SNAPSHOT"
+val guavaVersion = (findProperty("guavaVersion") as String?) ?: "33.7.2-jre"
 
 repositories {
     // mavenLocal first is deliberate — it mirrors Maven's local-m2-first resolution, so this codegen
@@ -41,6 +42,10 @@ repositories {
 }
 
 dependencies {
+    constraints {
+        implementation("com.google.guava:guava:$guavaVersion")
+    }
+
     // Drivine core library
     implementation("org.drivine:drivine4j:$drivineVersion")
 
